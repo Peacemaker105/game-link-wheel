@@ -64,6 +64,7 @@ var tests = new List<(string Name, Action Body)>
     ("control link: e-stop, resume, a lost heartbeat latches until resume", SafetyTests.Control),
     ("control link: deaf to the dashboard holds the force at zero", SafetyTests.ControlDeaf),
     ("control link: commands and status over UDP on loopback", SafetyTests.ControlUdp),
+    ("control link: quit holds the force at zero, then asks the program to close, once", SafetyTests.ControlQuit),
 };
 
 // Keep the tests' data out of any real data folder.
@@ -1319,6 +1320,34 @@ static class SafetyTests
         cts.Cancel();
         task.Wait(2000);
         Check.True(estop == true && reply?.Contains("status") == true, $"over UDP: estop {estop}, reply {reply}");
+    }
+
+    // changes/0349 (Main's review): the dashboard ends Game Link Wheel with "quit", so the window closes itself and the
+    // host lets go of the wheelbase; quit holds the force at zero first, like estop. And the program's one quit request
+    // (AppQuit: from quit, or the dashboard gone) is raised once, with its first reason.
+    public static void ControlQuit()
+    {
+        var now = new DateTime(2026, 11, 17, 0, 0, 0, DateTimeKind.Utc);
+        bool estop = false;
+        int quits = 0;
+        using var link = new ControlLink(0, on => estop = on, () => "", requireHeartbeat: false, clock: () => now, quit: () => quits++);
+        Check.True(link.Handle("quit") == "" && estop && quits == 1, $"quit: estop {estop}, asked to close {quits} time(s)");
+        using var silent = new ControlLink(0, on => estop = on, () => "", requireHeartbeat: false, clock: () => now);
+        estop = false;
+        Check.True(silent.Handle("quit") == "" && estop, "quit with no close handler did not hold the force");
+        AppQuit.ResetForTests();
+        try
+        {
+            string? seen = null;
+            int raised = 0;
+            AppQuit.Raised += r => { seen = r; raised++; };
+            Check.True(!AppQuit.Requested, "a quit was asked for before any request");
+            AppQuit.Request("first");
+            AppQuit.Request("second");
+            Check.True(AppQuit.Requested && raised == 1 && seen == "first" && AppQuit.Reason == "first",
+                $"AppQuit: raised {raised} time(s), reason {AppQuit.Reason}");
+        }
+        finally { AppQuit.ResetForTests(); }
     }
 }
 

@@ -57,7 +57,12 @@ if (parent is { } ppid)
     var watch = new Thread(() =>
     {
         try { Process.GetProcessById(ppid).WaitForExit(); } catch { }
-        Environment.Exit(0);   // the host's Dispose runs from ProcessExit handlers below
+        // changes/0349 (Main's review): first the window or the console loop is asked to end itself, which lets go of the
+        // wheelbase properly. If the program is still here 3 s later, Environment.Exit: both paths register a ProcessExit
+        // backstop (BridgeHost.ReleaseOnExit) that stops the force loop, which zeroes the force and lets go of the base.
+        AppQuit.Request("the dashboard that started it has ended");
+        Thread.Sleep(3000);
+        Environment.Exit(0);
     }) { IsBackground = true, Name = "parent watch" };
     watch.Start();
 }
@@ -138,7 +143,9 @@ using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
 using var host = new BridgeHost(options);
-AppDomain.CurrentDomain.ProcessExit += (_, _) => { try { host.Ffb.Dispose(); } catch { } };   // --parent's exit: zero the force first
+AppDomain.CurrentDomain.ProcessExit += (_, _) => host.ReleaseOnExit();   // --parent's last resort: zero the force first
+AppQuit.Raised += _ => { try { cts.Cancel(); } catch { } };              // changes/0349: "quit", or the dashboard gone
+if (AppQuit.Requested) cts.Cancel();
 var config = host.Config;
 var ffb = host.Ffb;
 string? note = config.LoadWarning ?? $"Config: {configPath}";

@@ -7,9 +7,11 @@ CCappsDevelopment (MIT), which did this for MOZA bases through MOZA's SDK. This 
 through DirectInput instead, so it works with any wheelbase that Windows sees as a force-feedback game controller. The
 force model, the virtual pad and the recorded laps are the bridge's work.
 
-> **0.1.0 is a preview. It has not driven a real wheel yet.** It is tested offline: 50 tests, four recorded laps.
+> **0.1.1 is a preview. It has not driven a real wheel yet.** It is tested offline: 51 tests, four recorded laps.
 > On a first run, set a low Master strength, keep your hands clear of the wheel for the motor test, and keep the
 > **KILL FFB** button within reach.
+
+**Setting it up**, from UE4SS to your first race: [SETUP.md](SETUP.md).
 
 ## What it does
 
@@ -42,6 +44,10 @@ The dashboard keeps a link to Game Link Wheel on UDP `127.0.0.1:4128`:
 
 - a heartbeat every 0.5 s. Without one for 1.5 s, Game Link Wheel holds the force at zero.
 - `estop` when motion stops or the rig's E-stop chain opens. The force fades to zero within 100 ms.
+- `quit` when motion stops: the force is held at zero and Game Link Wheel closes itself, letting go of the wheelbase.
+  The dashboard ends it from outside only if it is still running 3 s later.
+
+If the dashboard itself ends (closed or crashed), Game Link Wheel notices (`--parent`) and closes itself the same way.
 
 ## On its own
 
@@ -49,7 +55,7 @@ The dashboard keeps a link to Game Link Wheel on UDP `127.0.0.1:4128`:
 GameLinkWheel.exe                  the window (Setup opens on the first run)
 GameLinkWheel.exe --console        the text dashboard
   --port <n>          telemetry UDP port (4127)
-  --control-port <n>  the control link (4128): estop, resume, hb, status
+  --control-port <n>  the control link (4128): estop, resume, hb, status, quit
   --dashboard         a heartbeat on the control link is required; without one the force is held at zero
   --parent <pid>      end when that process ends
 GameLinkWheel.exe --list-devices | --replay <recording.tsv[.gz]> [profile.json] | --ffb-selftest | --idle-probe | --version
@@ -71,10 +77,10 @@ Settings, profiles and recordings are kept in `%APPDATA%\vn-motion-dashboard\gam
 
 ## Build and test
 
-You need the .NET 10 SDK (10.0.404 built the 0.1.0 release).
+You need the .NET 10 SDK (10.0.404 built the 0.1.1 release).
 
 ```
-dotnet run -c Release --project tests              the offline suite: "50 passed, 0 failed"
+dotnet run -c Release --project tests              the offline suite: "51 passed, 0 failed"
 dotnet publish src/GameLinkWheel.csproj -c Release -r win-x64 --self-contained true -o out
 ```
 

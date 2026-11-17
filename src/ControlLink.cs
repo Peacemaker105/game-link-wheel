@@ -10,11 +10,14 @@ namespace WheelBridge;
 ///   "resume" - it is clear again: force comes back over 1 s;
 ///   "hb"     - a heartbeat. When the dashboard started this program (<paramref name="requireHeartbeat"/>), no heartbeat for
 ///              <see cref="HeartbeatTimeout"/> counts as an e-stop, and only "resume" lifts it, once heartbeats are back;
-///   "status" - answered with one JSON line to the sender.
+///   "status" - answered with one JSON line to the sender;
+///   "quit"   - the dashboard is done with it (changes/0349, Main's review): the force is held at zero as for "estop", and
+///              <paramref name="quit"/> asks the program to close itself, which lets go of the wheelbase properly.
 /// Anything else is ignored. Nothing here can raise the force: every command can only hold it at zero or let it be.
 /// </summary>
 /// <param name="clock">UTC now; the tests pass their own.</param>
-public sealed class ControlLink(int port, Action<bool> setEStop, Func<string> status, bool requireHeartbeat, Func<DateTime>? clock = null) : IDisposable
+public sealed class ControlLink(int port, Action<bool> setEStop, Func<string> status, bool requireHeartbeat, Func<DateTime>? clock = null,
+                               Action? quit = null) : IDisposable
 {
     public static readonly TimeSpan HeartbeatTimeout = TimeSpan.FromSeconds(1.5);
     private UdpClient? _udp;
@@ -65,6 +68,11 @@ public sealed class ControlLink(int port, Action<bool> setEStop, Func<string> st
                     break;
                 case "hb": _lastBeat = _now(); break;
                 case "status": return status();
+                case "quit":
+                    _commandedStop = true;
+                    Apply();
+                    try { quit?.Invoke(); } catch { }
+                    return "";
                 default: return "";
             }
             Apply();

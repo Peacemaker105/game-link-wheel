@@ -309,6 +309,9 @@ public sealed class FfbEngine : IDisposable
         _thread.Join(1000);
     }
 
+    /// <summary>The force loop has ended: its last act zeroed the force and let go of the wheelbase (changes/0349).</summary>
+    public bool Stopped => !_thread.IsAlive;
+
     [DllImport("winmm.dll")] private static extern uint timeBeginPeriod(uint ms);
     [DllImport("winmm.dll")] private static extern uint timeEndPeriod(uint ms);
 }

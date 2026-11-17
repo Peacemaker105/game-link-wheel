@@ -22,8 +22,12 @@ public sealed class BridgeHost : IDisposable
     public static readonly string ConfigPath = Path.Combine(DataDir, "gamelinkwheel.json");
     public static readonly string ProfileDir = Path.Combine(DataDir, "profiles");
     public static readonly string RecordDir = Path.Combine(DataDir, "recordings");
+    /// <summary>How the program last let go of the wheelbase (changes/0349): for support, and for the dashboard's
+    /// end-to-end test, since the window has no console to say it in.</summary>
+    public static readonly string ExitRecordPath = Path.Combine(DataDir, "last-exit.json");
 
     private readonly CancellationTokenSource _cts = new();
+    private int _disposed;
     private readonly Task _rxTask, _controlTask;
     private readonly object _recLock = new();
     private Recorder? _recorder;
@@ -72,7 +76,8 @@ public sealed class BridgeHost : IDisposable
                 }
             }
         });
-        Control = new ControlLink(Config.ControlPort, on => Ffb.EStop = on, StatusJson, options.RequireHeartbeat);
+        Control = new ControlLink(Config.ControlPort, on => Ffb.EStop = on, StatusJson, options.RequireHeartbeat,
+                                  quit: () => AppQuit.Request("the dashboard asked it to close"));
         _rxTask = Task.Run(() => Receiver.RunAsync(_cts.Token));
         _controlTask = Task.Run(() => Control.RunAsync(_cts.Token));
     }
@@ -161,11 +166,41 @@ public sealed class BridgeHost : IDisposable
         return null;
     }
 
+    /// <summary>
+    /// The backstop for an exit that skips <see cref="Dispose"/> (changes/0349, Main's review): the parent watch's
+    /// Environment.Exit ends the window's thread before its <c>using</c> can dispose the host. Registered on ProcessExit by
+    /// both the window and the console: it stops the force loop, which zeroes the force and lets go of the wheelbase.
+    /// </summary>
+    public void ReleaseOnExit()
+    {
+        if (Volatile.Read(ref _disposed) != 0) return;
+        try { Ffb.Dispose(); } catch { }
+        WriteExitRecord("process exit", Ffb.Stopped);
+    }
+
+    private static void WriteExitRecord(string how, bool forceLoopStopped)
+    {
+        try
+        {
+            Directory.CreateDirectory(DataDir);
+            File.WriteAllText(ExitRecordPath, JsonSerializer.Serialize(new
+            {
+                at = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
+                how,
+                forceLoopStopped,   // its last act zeroes the force and lets go of the wheelbase (FfbEngine.Run's finally)
+                reason = AppQuit.Reason,
+            }) + "\n");
+        }
+        catch { }
+    }
+
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _cts.Cancel();
         // FFB first so the force is zeroed while the wheel is still being read, then the pad, then the input.
         Ffb.Dispose();
+        WriteExitRecord("closed", Ffb.Stopped);
         Pad.Dispose();
         Wheel.Dispose();
         lock (_recLock) { _recorder?.Dispose(); _recorder = null; }

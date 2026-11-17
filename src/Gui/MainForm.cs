@@ -21,6 +21,9 @@ public sealed class MainForm : Form
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             using var host = new BridgeHost(options);
+            // changes/0349 (Main's review): an Environment.Exit (the parent watch's last resort) ends this thread before the
+            // using above disposes the host, so the window needs the console's backstop too: let go of the wheelbase on exit.
+            AppDomain.CurrentDomain.ProcessExit += (_, _) => host.ReleaseOnExit();
             Application.Run(new MainForm(host));
         });
         t.SetApartmentState(ApartmentState.STA);
@@ -81,7 +84,9 @@ public sealed class MainForm : Form
         if (Cfg.LoadWarning is { } warning)
             Load += (_, _) => MessageBox.Show(this, warning, "Game Link Wheel", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
-        _ui.Tick += (_, _) => RefreshLive();
+        // changes/0349: a quit asked for (the dashboard's "quit", or the dashboard gone) closes every window, Setup's too, so
+        // Run's using disposes the host and the wheelbase is let go. The timer ticks inside a modal dialog's loop as well.
+        _ui.Tick += (_, _) => { if (AppQuit.Requested) { _ui.Stop(); Application.Exit(); return; } RefreshLive(); };
         _ui.Start();
         _autosave.Tick += (_, _) => { _autosave.Stop(); _host.SaveConfig(); };
         FormClosing += (_, _) => { _ui.Stop(); if (_autosave.Enabled) { _autosave.Stop(); _host.SaveConfig(); } };
