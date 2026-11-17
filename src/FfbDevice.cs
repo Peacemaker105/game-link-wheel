@@ -1,13 +1,13 @@
-using System.Runtime.InteropServices;
 using Vortice.DirectInput;
 
 namespace WheelBridge;
 
 /// <summary>
 /// Drives the wheelbase with a DirectInput constant-force effect in background + exclusive mode, so force keeps
-/// flowing while the game has focus. (The MOZA SDK's own effects acquire in foreground mode: they fail with
-/// "Access is denied" whenever its window isn't active and then throw a native exception that kills the process.)
-/// The effect is bound to a hidden window owned by this process; the MOZA SDK is still used for reading the wheel.
+/// flowing while the game has focus. (From SWGR Wheel Bridge: its author found this the one path that works with the
+/// game in front; it is also the most universal, as any base that works in ordinary sims takes a constant force.)
+/// changes/0349: the base is the one the user picked in Setup, by its DirectInput instance, and nothing else: never "any
+/// force-feedback device", which could put forces tuned for one motor on another.
 /// </summary>
 public sealed class FfbDevice : IDisposable
 {
@@ -28,34 +28,48 @@ public sealed class FfbDevice : IDisposable
     public bool Ready => _effect is not null;
     /// <summary>Recovery has failed for a while: the owner should dispose this device and start a new one.</summary>
     public bool Lost { get; private set; }
-    /// <summary>The base being driven (null until started).</summary>
-    public Wheelbase? Base { get; private set; }
+    /// <summary>The base being driven, as DirectInput names it (null until started).</summary>
+    public string? ProductName { get; private set; }
 
-    /// <summary>DirectInput product GUIDs start with PID&lt;&lt;16 | VID.</summary>
-    private static int VendorId(Guid productGuid) => BitConverter.ToInt32(productGuid.ToByteArray(), 0) & 0xFFFF;
-
-    /// <param name="nameHint">Substring of the DirectInput product name to prefer (e.g. "MOZA").</param>
-    public bool Start(string nameHint)
+    /// <summary>The attached force-feedback controllers, for the Setup's picker.</summary>
+    public static List<(Guid Instance, string Name)> List()
     {
+        using var di = DInput.DirectInput8Create();
+        return di.GetDevices(DeviceClass.GameControl, DeviceEnumerationFlags.ForceFeedback | DeviceEnumerationFlags.AttachedOnly)
+            .Select(d => (d.InstanceGuid, (d.InstanceName ?? d.ProductName ?? "wheelbase").Trim())).ToList();
+    }
+
+    /// <summary>
+    /// Which attached base to open: the one picked in Setup, by its instance or, when that is not attached (another USB
+    /// port can give it a new instance), the only attached force-feedback device with its name. Never any other: forces
+    /// tuned for one motor must not go to another. Empty when there is none.
+    /// </summary>
+    public static Guid Pick(IEnumerable<(Guid Instance, string Name)> attached, Guid instance, string? name)
+    {
+        if (instance == Guid.Empty) return Guid.Empty;
+        var list = attached.ToList();
+        if (list.Any(d => d.Instance == instance)) return instance;
+        if (string.IsNullOrEmpty(name)) return Guid.Empty;
+        var same = list.Where(d => d.Name == name).ToList();
+        return same.Count == 1 ? same[0].Instance : Guid.Empty;
+    }
+
+    /// <param name="instance">The base the user picked in Setup (its DirectInput instance GUID).</param>
+    /// <param name="name">Its name then, for <see cref="Pick"/>'s fallback.</param>
+    public bool Start(Guid instance, string? name = null)
+    {
+        if (instance == Guid.Empty) { Status = "no wheelbase chosen: pick yours in Setup"; return false; }
         try
         {
-            _hidden = new HiddenWindow();
+            _hidden = new HiddenWindow("GameLinkWheelFfb");
             if (_hidden.Handle == IntPtr.Zero) { Status = "could not create the FFB window"; return false; }
 
             _di = DInput.DirectInput8Create();
-            var candidates = _di.GetDevices(DeviceClass.GameControl, DeviceEnumerationFlags.ForceFeedback | DeviceEnumerationFlags.AttachedOnly);
-            // MOZA bases are found by USB vendor ID: their DirectInput names don't contain "MOZA" (the R3 is
-            // "R3 Racing Wheel and Pedals"). Never fall back to an arbitrary FFB device: it would get forces tuned for another motor.
-            var pick = candidates.FirstOrDefault(d => VendorId(d.ProductGuid) == Wheelbase.MozaVendorId)
-                       ?? candidates.FirstOrDefault(d => nameHint.Length > 0
-                              && (d.ProductName.Contains(nameHint, StringComparison.OrdinalIgnoreCase)
-                                  || d.InstanceName.Contains(nameHint, StringComparison.OrdinalIgnoreCase)));
-            if (pick is null)
-            {
-                Status = candidates.Count == 0 ? "no force-feedback device found" : "no MOZA force-feedback device found";
-                return false;
-            }
-            Base = VendorId(pick.ProductGuid) == Wheelbase.MozaVendorId ? Wheelbase.FromProductName(pick.ProductName.Trim()) : Wheelbase.Unknown(pick.ProductName.Trim());
+            var attached = _di.GetDevices(DeviceClass.GameControl, DeviceEnumerationFlags.ForceFeedback | DeviceEnumerationFlags.AttachedOnly);
+            var chosen = Pick(attached.Select(d => (d.InstanceGuid, (d.InstanceName ?? d.ProductName ?? "wheelbase").Trim())), instance, name);
+            var pick = attached.FirstOrDefault(d => chosen != Guid.Empty && d.InstanceGuid == chosen);
+            if (pick is null) { Status = "the chosen wheelbase is not connected (or is off)"; return false; }
+            ProductName = (pick.InstanceName ?? pick.ProductName ?? "wheelbase").Trim();
 
             _device = _di.CreateDevice(pick.InstanceGuid);
             _device.SetDataFormat<RawJoystickState>().CheckError();
@@ -78,7 +92,7 @@ public sealed class FfbDevice : IDisposable
             };
             _effect = _device.CreateEffect(EffectGuid.ConstantForce, _params);
             _effect.Start(1, EffectPlayFlags.None).CheckError();
-            Status = $"DirectInput constant force on \"{pick.ProductName.Trim()}\"";
+            Status = $"DirectInput constant force on \"{ProductName}\"";
             return true;
         }
         catch (Exception ex)
@@ -143,66 +157,5 @@ public sealed class FfbDevice : IDisposable
         Release();
         Status = "stopped";
         _hidden?.Dispose();
-    }
-
-    /// <summary>A never-shown top-level window with its own message loop thread.</summary>
-    private sealed class HiddenWindow : IDisposable
-    {
-        private readonly Thread _thread;
-        private readonly ManualResetEventSlim _ready = new();
-        private uint _threadId;
-        // The window class is registered once per process and outlives any one HiddenWindow (the FFB device is
-        // recreated after an unplug), so its WndProc must be a delegate that is never collected.
-        private static readonly WndProc Proc = DefWindowProc;
-        private static readonly IntPtr ProcPtr = Marshal.GetFunctionPointerForDelegate(Proc);
-        public IntPtr Handle { get; private set; }
-
-        public HiddenWindow()
-        {
-            _thread = new Thread(Run) { IsBackground = true, Name = "FFB window" };
-            _thread.SetApartmentState(ApartmentState.STA);
-            _thread.Start();
-            _ready.Wait(2000);
-        }
-
-        private void Run()
-        {
-            _threadId = GetCurrentThreadId();
-            var wc = new WNDCLASS { lpfnWndProc = ProcPtr, lpszClassName = "SWGRWheelBridgeFfb", hInstance = GetModuleHandle(null) };
-            RegisterClass(ref wc);   // fails harmlessly (class exists) for every window after the first
-            Handle = CreateWindowEx(0, wc.lpszClassName, "SWGR Wheel Bridge FFB", 0x00CF0000 /* WS_OVERLAPPEDWINDOW */, 0, 0, 1, 1, IntPtr.Zero, IntPtr.Zero, wc.hInstance, IntPtr.Zero);
-            _ready.Set();
-            while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0) { TranslateMessage(ref msg); DispatchMessage(ref msg); }
-        }
-
-        public void Dispose()
-        {
-            if (Handle != IntPtr.Zero) PostThreadMessage(_threadId, 0x0012 /* WM_QUIT */, IntPtr.Zero, IntPtr.Zero);
-            _thread.Join(500);
-        }
-
-        private delegate IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        private struct WNDCLASS
-        {
-            public uint style; public IntPtr lpfnWndProc; public int cbClsExtra, cbWndExtra;
-            public IntPtr hInstance, hIcon, hCursor, hbrBackground;
-            public string? lpszMenuName; public string lpszClassName;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam, lParam; public uint time; public int x, y; }
-
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern ushort RegisterClass(ref WNDCLASS wc);
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-        private static extern IntPtr CreateWindowEx(uint exStyle, string cls, string name, uint style, int x, int y, int w, int h, IntPtr parent, IntPtr menu, IntPtr inst, IntPtr param);
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr DefWindowProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-        [DllImport("user32.dll")] private static extern int GetMessage(out MSG msg, IntPtr hWnd, uint min, uint max);
-        [DllImport("user32.dll")] private static extern bool TranslateMessage(ref MSG msg);
-        [DllImport("user32.dll")] private static extern IntPtr DispatchMessage(ref MSG msg);
-        [DllImport("user32.dll")] private static extern bool PostThreadMessage(uint id, uint msg, IntPtr w, IntPtr l);
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr GetModuleHandle(string? name);
-        [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
     }
 }

@@ -57,7 +57,7 @@
       }
     },
     "AligningPeakSlipDeg": 10,
-    "LoadReference": 12,
+    "LoadReference": 10.5,
     "ImpactReference": 3000,
     "ImpactDecayMs": 70,
     "AirCentering": 0.15,

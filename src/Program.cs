@@ -1,54 +1,99 @@
+using System.Diagnostics;
 using WheelBridge;
 
-// Galactic Racer Wheel Bridge:
-//  - receives telemetry from the in-game exporter, mirrors it to shared memory, shows it live (Phase 1)
-//  - reads the MOZA R3 and drives the game through a virtual Xbox pad (input)
-//  - synthesizes force feedback from the telemetry and sends it to the R3 (FFB)
+// Game Link Wheel (changes/0349, part 2), from SWGR Wheel Bridge 0.1 (MIT):
+//  - reads any DirectInput wheel, pedals and buttons and drives the game through a virtual Xbox pad (ViGEmBus)
+//  - takes the game's telemetry from Game Link (the VNSG frames of changes/0340, over UDP)
+//  - synthesizes force feedback from it and sends it to the wheelbase picked in Setup
+//
+//   GameLinkWheel.exe                 the window (double-click)
+//   GameLinkWheel.exe --console       the text dashboard
+//   options: --port <telemetry UDP port> --control-port <port> --dashboard (started by the dashboard: its heartbeat is
+//            required, a lost one holds the force at zero) --parent <pid> (end when that process ends)
+//   tools:   --replay <recording.tsv[.gz]> [profile.json]   --list-devices   --ffb-selftest   --idle-probe   --version
 
 string configPath = BridgeHost.ConfigPath;
 
-// Only one bridge may own the pipe, the virtual pad and the wheelbase at a time.
-using var instance = new Mutex(false, @"Local\SWGR_WheelBridge_Instance");
+int? port = null, controlPort = null, parent = null;
+bool dashboard = false;
+var rest = new List<string>();
+for (int i = 0; i < args.Length; i++)
+{
+    string a = args[i];
+    bool Int(out int v) { v = 0; return i + 1 < args.Length && int.TryParse(args[++i], out v); }
+    if (a == "--port" && Int(out int p1)) port = p1;
+    else if (a == "--control-port" && Int(out int p2)) controlPort = p2;
+    else if (a == "--parent" && Int(out int p3)) parent = p3;
+    else if (a == "--dashboard") dashboard = true;
+    else rest.Add(a);
+}
+args = [.. rest];
+var options = new HostOptions(port, controlPort, dashboard);
+
+// Only one Game Link Wheel may own the virtual pad and the wheelbase at a time.
+using var instance = new Mutex(false, @"Local\VNMotion_GameLinkWheel_Instance");
 bool AlreadyRunning()
 {
     try { return !instance.WaitOne(0); }
     catch (AbandonedMutexException) { return false; }   // previous instance crashed; we own it now
 }
 
-if (args is ["--version"]) { Console.WriteLine($"SWGR Wheel Bridge {typeof(BridgeHost).Assembly.GetName().Version?.ToString(3)}"); return; }
+if (args is ["--version"]) { Console.WriteLine($"Game Link Wheel {typeof(BridgeHost).Assembly.GetName().Version?.ToString(3)}"); return; }
 
-// Double-clicking the exe opens the GUI; --console gives the text dashboard (also used when output is redirected).
+if (args is ["--list-devices"])
+{
+    using var w = new WheelInput(new BridgeConfig());
+    Thread.Sleep(600);
+    Console.WriteLine("Controllers:");
+    foreach (var d in w.Devices) Console.WriteLine($"  {d.Name}  {d.Instance}  axes {string.Join(' ', d.Axes)}");
+    Console.WriteLine("Force-feedback devices:");
+    foreach (var (g, n) in FfbDevice.List()) Console.WriteLine($"  {n}  {g}");
+    return;
+}
+
+// End with the process that started us (the dashboard): a crashed dashboard leaves no force behind.
+if (parent is { } ppid)
+{
+    var watch = new Thread(() =>
+    {
+        try { Process.GetProcessById(ppid).WaitForExit(); } catch { }
+        Environment.Exit(0);   // the host's Dispose runs from ProcessExit handlers below
+    }) { IsBackground = true, Name = "parent watch" };
+    watch.Start();
+}
+
+// Double-clicking the exe opens the window; --console gives the text dashboard (also used when output is redirected).
 if (args is [] && !Console.IsOutputRedirected) args = ["--gui"];
 
 if (args is ["--gui"])
 {
-    // The GUI owns the window; drop the console this exe was started with so no empty terminal hangs around.
+    // The window owns the screen; drop the console this exe was started with so no empty terminal hangs around.
     FreeConsole();
     if (AlreadyRunning())
     {
-        System.Windows.Forms.MessageBox.Show("The Wheel Bridge is already running (console or GUI). Close it first.",
-            "SWGR Wheel Bridge", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Warning);
+        System.Windows.Forms.MessageBox.Show("Game Link Wheel is already running. Close it first.",
+            "Game Link Wheel", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Warning);
         return;
     }
-    WheelBridge.Gui.MainForm.Run();
+    WheelBridge.Gui.MainForm.Run(options);
     return;
 }
 
-if (args is ["--replay", var replayPath, ..var rest])
+if (args is ["--replay", var replayPath, ..var replayRest])
 {
     // Optional profile: replay with that profile's feel settings (the live config file is not changed).
     var cfg = BridgeConfig.Load(configPath);
-    if (rest is [var profile]) cfg.ApplyProfile(BridgeConfig.ReadFile(profile));
+    if (replayRest is [var profile]) cfg.ApplyProfile(BridgeConfig.ReadFile(profile));
     Replay.Run(replayPath, cfg);
     return;
 }
 
 if (args is ["--ffb-selftest"])
 {
-    // Acquire the wheelbase and hold a zero-force effect for 3 s: proves the FFB path without moving the wheel.
+    // Acquire the chosen wheelbase and hold a zero-force effect for 3 s: proves the FFB path without moving the wheel.
     var cfg = BridgeConfig.Load(configPath);
     using var dev = new FfbDevice();
-    bool ok = dev.Start(cfg.Ffb.Device);
+    bool ok = dev.Start(cfg.Ffb.DeviceInstance, cfg.Ffb.DeviceName);
     Console.WriteLine($"start: {ok}: {dev.Status}");
     for (int i = 0; i < 300 && ok; i++) { dev.Set(0); Thread.Sleep(10); }
     Console.WriteLine($"after 3 s at zero force: {dev.Status}");
@@ -57,10 +102,11 @@ if (args is ["--ffb-selftest"])
 
 if (args is ["--idle-probe"])
 {
-    // Read the wheel at rest for 5 s: shows how noisy the SDK angle/velocity are (drives the Damping layer).
-    using var w = new WheelInput();
-    var vel = new List<float>(); var ang = new List<float>(); var times = new List<double>();
-    var sw = System.Diagnostics.Stopwatch.StartNew();
+    // Read the wheel at rest for 5 s: shows how noisy the angle is (drives the Damping layer).
+    var cfg = BridgeConfig.Load(configPath);
+    using var w = new WheelInput(cfg);
+    var ang = new List<float>(); var times = new List<double>();
+    var sw = Stopwatch.StartNew();
     WheelState? prev = null; int changes = 0;
     while (sw.Elapsed.TotalSeconds < 6)
     {
@@ -68,37 +114,36 @@ if (args is ["--idle-probe"])
         if (s is not null && sw.Elapsed.TotalSeconds > 1)
         {
             if (prev is not null && s.AngleDegrees != prev.AngleDegrees) { changes++; times.Add(sw.Elapsed.TotalMilliseconds); }
-            vel.Add(s.VelocityDps); ang.Add(s.AngleDegrees); prev = s;
+            ang.Add(s.AngleDegrees); prev = s;
         }
         Thread.Sleep(2);
     }
-    Console.WriteLine($"status {w.Status}, samples {vel.Count}, angle changes {changes}");
-    if (vel.Count > 0)
+    Console.WriteLine($"status {w.Status}, samples {ang.Count}, angle changes {changes}");
+    if (ang.Count > 0)
     {
         Console.WriteLine($"angle min {ang.Min():F3} max {ang.Max():F3}");
-        Console.WriteLine($"vel   min {vel.Min():F1} max {vel.Max():F1} rms {Math.Sqrt(vel.Average(v => v * v)):F1} nonzero {vel.Count(v => v != 0)}");
         var gaps = times.Zip(times.Skip(1), (a, b) => b - a).ToList();
         if (gaps.Count > 0) Console.WriteLine($"angle update gap ms: median {gaps.Order().ElementAt(gaps.Count / 2):F1}");
-        Console.WriteLine("distinct vel values: " + string.Join(" ", vel.Distinct().Take(20).Select(v => v.ToString("F1"))));
     }
     return;
 }
 
 if (AlreadyRunning())
 {
-    Console.WriteLine("The Wheel Bridge is already running (console or GUI). Close it first.");
+    Console.WriteLine("Game Link Wheel is already running. Close it first.");
     return;
 }
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
-using var host = new BridgeHost();
+using var host = new BridgeHost(options);
+AppDomain.CurrentDomain.ProcessExit += (_, _) => { try { host.Ffb.Dispose(); } catch { } };   // --parent's exit: zero the force first
 var config = host.Config;
 var ffb = host.Ffb;
 string? note = config.LoadWarning ?? $"Config: {configPath}";
 
-// Without an interactive console (e.g. output piped to a log), print one status line per second instead.
+// Without an interactive console (e.g. output piped to a log, or started by the dashboard), one status line per second.
 if (Console.IsOutputRedirected)
 {
     Console.WriteLine(note);
@@ -108,11 +153,7 @@ if (Console.IsOutputRedirected)
         {
             await Task.Delay(1000, cts.Token);
             if (host.PollAutoProfile() is { } switched) Console.WriteLine($"{DateTime.Now:HH:mm:ss} {switched}");
-            var w = host.Wheel.State;
-            var rx = host.Receiver;
-            Console.WriteLine($"{DateTime.Now:HH:mm:ss} pipe={rx.Connected} frames={rx.FramesReceived} bad={rx.BadFrames} {host.Dashboard.Summary()}");
-            Console.WriteLine($"         ffb: {ffb.DeviceStatus} {ffb.LoopHz:F0}Hz out={ffb.LastTorque:F2} state={ffb.ModelState}");
-            Console.WriteLine($"         wheel: {host.Wheel.Status} {host.Wheel.PollHz:F0}Hz angle={w?.AngleDegrees:F1} thr={w?.RawThrottle} brk={w?.RawBrake} | pad: {host.Pad.Status}");
+            Console.WriteLine(host.StatusJson());
         }
     }
     catch (OperationCanceledException) { }
@@ -153,6 +194,7 @@ try
             if (key == ConsoleKey.L)
             {
                 if (!ffb.CenterLock && ffb.Racing) note = "Force center is only available outside a race";
+                else if (!ffb.CenterLock && ffb.NeedsTravel) note = "Force center needs the wheel's rotation: enter it in Setup (open the window) first";
                 else if (!ffb.CenterLock && ffb.NeedsMotorTest) note = "Force center needs the motor direction: take your hands off the wheel and press [T] first";
                 else { ffb.CenterLock = !ffb.CenterLock; note = ffb.CenterLock ? "Force center on: wheel pinned at 0°, stick held at 0 ([L] to release)" : "Force center off"; }
             }

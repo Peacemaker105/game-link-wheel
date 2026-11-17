@@ -86,9 +86,9 @@ public static class Tips
         """;
 
     public const string Master = """
-        Master: scales all force feedback together. 1.00 = the strength the profiles were tuned for (on a 3.9 Nm R3).
+        Master: scales all force feedback together. 1.00 = the strength the profiles were tuned for (on a 3.9 Nm base).
         Lower it to make everything weaker without changing the balance between layers. Profiles never change Master.
-        On a stronger base the bridge already reduces the force automatically (see Base strength).
+        On a stronger base the force is already reduced automatically from the rated torque entered in Setup (see Base strength).
         The bar on the right is the total force being sent to the wheel (blue = right, orange = left, red = clipping at 100%).
         If it is often red, the layers add up to more than the motor can give: lower the strongest layers or the master.
         """;
@@ -106,7 +106,7 @@ public static class Tips
 
     public const string LoadReference = """
         Load reference (g): how hard a corner must be to give full Load force. Calculated from speed × turn rate.
-        Lower it: load builds in gentler corners. Good for vehicles that corner with less sideways force (the speeder bike reaches about half of what the car does).
+        Lower it: load builds in gentler corners. A hard corner (the top tenth) measured about 11 on the land speeder, 12 on the speeder bike, 14 on the skim speeder and 23 on the podracer.
         Raise it: only the hardest corners feel heavy.
         """;
 
@@ -148,7 +148,7 @@ public static class Tips
         """;
 
     public const string CenterLockForce = """
-        Force center strength: how hard the Force center button holds the wheel. 1 = the wheelbase's full torque (not scaled by Master).
+        Force center strength: how hard the Force center button holds the wheel. 1 = the strength Master 1.00 has (scaled by Base strength, not by Master).
         """;
 
     public const string CenterLockFullAt = """
@@ -180,7 +180,7 @@ public static class Tips
         Steering lock (degrees, lock to lock): how far you turn the wheel for full steering. 180 = 90° each way.
         Lower it: quicker, twitchier steering with less hand movement.
         Raise it: slower, more precise steering.
-        Turning past this does nothing in game. Set the R3's own max angle in Pit House to the same value for a real hard stop.
+        Turning past this does nothing in game. For a real hard stop, set the same rotation in your wheelbase's own software, and enter it in Setup too.
         """;
 
     public const string AntiDeadzone = """
@@ -209,7 +209,7 @@ public static class Tips
         """;
 
     public const string Launch = "Starts STAR WARS: Galactic Racer through Steam, so DRM, the Steam overlay and the telemetry mod all load as normal.";
-    public const string Kill = "KILL FFB (Alt+K): instantly zeroes all force. Click again to resume. Not saved: the next start has FFB on.";
+    public const string Kill = "KILL FFB (Alt+K): instantly zeroes all force. Click again to resume. Not saved: the next start has FFB on. The dashboard's E-STOP and park also hold the force at zero (resumed from the dashboard).";
     public const string ForceCenter = """
         Force center (Alt+C): turns the wheel back to 0° and holds it there with full force, so it fights you if you try to turn it. Handy when you put the wheel down or between sessions.
         While it is on, the steering sent to the game is held at exactly 0, so the vehicle doesn't drift.
@@ -221,6 +221,7 @@ public static class Tips
         Motor test: pushes the wheel gently for 0.3 s to learn which way the motor turns it, and saves the direction (ForceSign).
         No force feedback is sent until it has run once: with the wrong direction every force would push away from center.
         Needed once per wheelbase, or again if every force feels backwards. Take your hands off the wheel first.
+        The push is sized from the rated torque entered in Setup (about 0.5 Nm); with no torque entered it is gentler and may not move a geared wheel.
         """;
     public const string Record = """
         Record: saves the game data to the recordings folder as a spreadsheet-style file. Click again to stop.
@@ -237,10 +238,9 @@ public static class Tips
         With "Auto profile" on, the profile set for each vehicle type loads by itself when you get into that vehicle.
         "modified" means your live settings differ from the saved profile.
         """;
-    public const string GetSdk = "The MOZA SDK is not installed. The bridge needs it to read the wheel. Click to download it from MOZA or to install it from a MOZA_SDK.zip you downloaded.";
     public const string BaseScale = """
         Base strength: how much of your wheelbase's full torque Master 1.00 uses. 0 = automatic.
-        Automatic is 1.00 on the R3 (the only tested base). On other bases it gives about the R3's force (3.9 Nm) with a 15% safety margin: R5 ×0.60, R9 ×0.37, R12 ×0.28, R16 ×0.21, R21 ×0.16, unknown base ×0.16.
+        Automatic gives about the force the profiles were tuned with (3.9 Nm) with a 15% safety margin, from the rated torque entered in Setup: a 5 Nm base ×0.66, 8 Nm ×0.41, 12 Nm ×0.28, 20 Nm ×0.17. With no torque entered the base is taken as 25 Nm (×0.13), so the force starts weak.
         Set a value only if the automatic strength is too weak. Raise it in small steps, with your hands clear of the wheel on the first try.
         """;
     public const string LeanReference = """
@@ -249,24 +249,24 @@ public static class Tips
         Raise it: only deep leans feel heavy.
         """;
     public const string BindHint = """
-        Click Bind…, then press a wheel button (or, for a button, push a pedal past half way) within 6 seconds. You can bind several inputs to one control.
-        RT and LT use the pedal you choose plus any wheel buttons you bind (a held button = full press), so a wheel without pedals can use paddles to accelerate and brake.
+        Click Bind…, then press a button on the wheel or any other controller, such as a button box (or, for a button, push a pedal past half way), within 6 seconds. You can bind several inputs to one control.
+        RT and LT use the pedal you choose plus any buttons you bind (a held button = full press), so a wheel without pedals can use paddles to accelerate and brake.
         Changes work at once and save automatically. They stay with your wheel and are not part of a profile.
         """;
     public const string TriggerPedal = "The pedal that drives this trigger. Choose None if you have no pedals or want this trigger on buttons only.";
-    public const string BindTrigger = "Bind a wheel button that presses this trigger fully while held (for example a shifter paddle).";
-    public const string BindButton = "Bind a wheel button or a pedal to this control. Press the input within 6 seconds after you click.";
-    public const string ClearBinding = "Removes the wheel buttons (and pedals, for a button) bound to this control.";
+    public const string BindTrigger = "Bind a button that presses this trigger fully while held (for example a shifter paddle).";
+    public const string BindButton = "Bind a button (on the wheel or any controller) or a pedal to this control. Press the input within 6 seconds after you click.";
+    public const string ClearBinding = "Removes the buttons (and pedals, for a button) bound to this control.";
 
     public const string AutoProfile = """
         Auto profile: loads the matching profile by itself when you get into a land speeder, speeder bike, skim speeder or podracer
-        (Land Speeder, Speeder Bike, Skim Speeder, Podracer; change the names under VehicleProfiles in wheelbridge.json).
+        (Land Speeder, Speeder Bike, Skim Speeder, Podracer; change the names under VehicleProfiles in gamelinkwheel.json).
         It never throws away tuning you haven't saved: if the current profile is "modified", it stays loaded and the status bar says so.
         """;
     public const string ResetFfb = "Resets every FFB gain, shape and mute setting to the built-in defaults. Master, steering, pedals and buttons are not touched.";
     public const string RunSetup = """
-        Runs the guided setup again: the motor test, pedal calibration (or no pedals), then every control one at a time.
-        It opens by itself the first time the bridge sees your wheel.
+        Runs the guided setup again: your wheel (the force-feedback base, its rated torque and rotation, the steering), the motor test, the pedals (or no pedals), then every control one at a time.
+        It opens by itself the first time Game Link Wheel starts.
         """;
     public const string AlwaysOnTop = "Keeps this window above the game. Useful for tuning live on one screen.";
 

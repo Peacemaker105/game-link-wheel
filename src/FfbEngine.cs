@@ -33,6 +33,11 @@ public sealed class FfbEngine : IDisposable
     public string? CenterLockFault { get; set; }
     /// <summary>No force is sent until the motor test has found which way this motor turns.</summary>
     public bool NeedsMotorTest => !_cfg.Ffb.ForceSignTested;
+    /// <summary>
+    /// changes/0349: nor until the wheel's rotation (lock to lock) is entered in Setup. The angle comes from the axis and
+    /// that number, and a wrong one makes every spring stiffer or softer per real degree than it was tuned.
+    /// </summary>
+    public bool NeedsTravel => !_cfg.TravelConfirmed;
     public bool Racing => _model.Racing;
     public float LastTorque { get; private set; }
     public double LoopHz { get; private set; }
@@ -43,14 +48,69 @@ public sealed class FfbEngine : IDisposable
     public float Liveness => _model.Liveness;
     public string ModelState => _model.State;
     public bool Ready => _device.Ready;
-    /// <summary>The detected base (null until the FFB device has started once).</summary>
-    public Wheelbase? Base => _device.Base ?? _lastBase;
-    private Wheelbase? _lastBase;
+    /// <summary>The base being driven, as DirectInput names it (null until the FFB device has started once).</summary>
+    public string? DeviceName => _device.ProductName ?? _lastName;
+    private string? _lastName;
+
+    // changes/0349: strength by rated torque. The profiles were tuned on a 3.9 Nm MOZA R3; on any other base the output
+    // is scaled to about R3-equivalent newton-metres x 0.85 (the bridge's margin for an untested base). A base whose
+    // torque was not entered is taken to be a strong one, so the force starts small.
+    public const float ReferenceNm = 3.9f, UntestedMargin = 0.85f, AssumedNm = 25f;
+    public static float AutoScale(float ratedNm) => Math.Clamp(ReferenceNm / (ratedNm > 0 ? ratedNm : AssumedNm) * UntestedMargin, 0.05f, 1f);
+    /// <summary>The fraction of the base's full torque that Master 1.0 maps to: the user's fixed choice, or <see cref="AutoScale"/>.</summary>
+    public float BaseScale => _cfg.Ffb.BaseScale > 0 ? _cfg.Ffb.BaseScale : AutoScale(_cfg.Ffb.RatedNm);
+
     /// <summary>
-    /// The fraction of the base's full torque that Master 1.0 maps to: the user's fixed choice, or automatic from
-    /// the model (1 on the R3, about R3-equivalent newton-metres with a safety margin elsewhere, minimal if unknown).
+    /// The motor test's push. The bridge's 12 % of full torque was 0.47 Nm on its 3.9 Nm R3 but would be 3 Nm on a 25 Nm
+    /// base, so it is scaled with the strength like every other force (changes/0349): the same 0.47 Nm on any base whose
+    /// torque is entered, gentler on one whose torque is not.
     /// </summary>
-    public float BaseScale => _cfg.Ffb.BaseScale > 0 ? _cfg.Ffb.BaseScale : (Base ?? Wheelbase.Unknown()).AutoScale;
+    public const float MotorTestTorque = 0.12f;
+    public static float MotorTestPush(float baseScale) => MotorTestTorque * Math.Clamp(baseScale / UntestedMargin, 0f, 1f);
+
+    private volatile bool _restart;
+    /// <summary>Setup picked a wheelbase: the loop lets go of the one it drives (force zeroed) and opens that one.</summary>
+    public void ChooseDevice(Guid instance, string name)
+    {
+        _cfg.Ffb.ChooseDevice(instance, name);
+        _restart = true;
+    }
+
+    // changes/0349: the dashboard's e-stop or park (ControlLink), or its link lost while it started this program: the force
+    // fades to zero within EStopFadeSeconds and stays there until resumed, then comes back over ResumeSeconds.
+    public const float EStopFadeSeconds = 0.1f, ResumeSeconds = 1f;
+    private volatile bool _estop;
+    private float _estopGain = 1;
+    /// <summary>Held at zero force (fading out within 100 ms) while true.</summary>
+    public bool EStop { get => _estop; set => _estop = value; }
+    /// <summary>0..1: what is left of the force while an e-stop fades it, or comes back after one.</summary>
+    public float EStopGain => _estopGain;
+    /// <summary>
+    /// What goes to the motor this tick (pure, so the tests can walk every gate): nothing while killed; the motor test's
+    /// push while it runs; nothing until the motor direction and (changes/0349) the wheel's rotation are known; then force
+    /// center's hold, or the model's torque while FFB is on. changes/0349: the e-stop fade scales all of it, the motor test
+    /// and force center too. A non-finite result is 0.
+    /// </summary>
+    public static float SelectOutput(bool killed, float motorTest, bool needsMotorTest, bool needsTravel, float pin, bool enabled,
+                                     float torque, int sign, float estopGain)
+    {
+        float output = killed ? 0 : !float.IsNaN(motorTest) ? motorTest
+            : needsMotorTest || needsTravel ? 0
+            : !float.IsNaN(pin) ? pin * sign
+            : !enabled ? 0 : torque * sign;
+        output *= estopGain;
+        return float.IsFinite(output) ? output : 0;
+    }
+
+    /// <summary>One step of the e-stop fade (the loop calls it every tick; the tests drive it with their own dt).</summary>
+    public static float StepEStopGain(float gain, bool estop, float dt) =>
+        estop ? Math.Max(0, gain - dt / EStopFadeSeconds) : Math.Min(1, gain + dt / ResumeSeconds);
+
+    /// <summary>
+    /// The fade's value when a loop starts (a base found, replugged or picked again; changes/0349). An e-stop that came while
+    /// no loop ran holds the force at zero from the first tick, never a fade from full strength; without one it carries on.
+    /// </summary>
+    public static float GainAtLoopStart(float gain, bool estop) => estop ? 0 : gain;
 
     public FfbEngine(BridgeConfig cfg, WheelInput wheel, VirtualPad pad)
     {
@@ -74,14 +134,21 @@ public sealed class FfbEngine : IDisposable
         {
             while (_running)
             {
-                // Wait for the SDK (started by WheelInput) to see the wheelbase before creating the effect.
+                // Wait for the wheel to be read (WheelInput) before creating the effect.
                 while (_running && _wheel.State is null) Thread.Sleep(100);
                 if (!_running) return;
-                if (!_device.Ready && !_device.Start(_cfg.Ffb.Device))
+                if (_restart)
                 {
-                    // No FFB device yet (base off, Pit House holding it, unplugged): try again rather than give up for the session.
+                    // Setup picked another base: let go of this one (its force zeroed first) before opening that one.
+                    _restart = false;
                     _device.Dispose();
-                    for (int i = 0; i < 30 && _running; i++) Thread.Sleep(100);
+                    _device = new FfbDevice();
+                }
+                if (!_device.Ready && !_device.Start(_cfg.Ffb.DeviceInstance, _cfg.Ffb.DeviceName))
+                {
+                    // No FFB device yet (none chosen, base off, its own software holding it, unplugged): try again rather than give up.
+                    _device.Dispose();
+                    for (int i = 0; i < 30 && _running && !_restart; i++) Thread.Sleep(100);
                     _device = new FfbDevice();
                     continue;
                 }
@@ -95,7 +162,7 @@ public sealed class FfbEngine : IDisposable
                 }
                 if (_device.Lost)
                 {
-                    _lastBase = _device.Base ?? _lastBase;
+                    _lastName = _device.ProductName ?? _lastName;
                     _device.Dispose();
                     _device = new FfbDevice();
                 }
@@ -114,10 +181,11 @@ public sealed class FfbEngine : IDisposable
     /// <summary>Runs ticks until the bridge stops or the device is lost for good (then <see cref="Run"/> recreates it).</summary>
     private void Loop()
     {
+        _estopGain = GainAtLoopStart(_estopGain, _estop);   // changes/0349: an e-stop from before this loop: zero from its first tick
         double last = _clock.Elapsed.TotalSeconds, window = last;
         float lastAngle = _wheel.State?.AngleDegrees ?? 0;
         int ticks = 0;
-        while (_running && !_device.Lost)
+        while (_running && !_device.Lost && !_restart)
         {
             double now = _clock.Elapsed.TotalSeconds;
             float dt = (float)Math.Clamp(now - last, 0.0005, 0.05);
@@ -144,12 +212,8 @@ public sealed class FfbEngine : IDisposable
             }
             else _lockActive = false;
 
-            float ov = _override;
-            float output = Killed ? 0 : !float.IsNaN(ov) ? ov
-                : NeedsMotorTest ? 0
-                : !float.IsNaN(pin) ? pin * _cfg.Ffb.ForceSign
-                : !_cfg.Ffb.Enabled ? 0 : torque * _cfg.Ffb.ForceSign;
-            if (!float.IsFinite(output)) output = 0;
+            _estopGain = StepEStopGain(_estopGain, _estop, dt);
+            float output = SelectOutput(Killed, _override, NeedsMotorTest, NeedsTravel, pin, _cfg.Ffb.Enabled, torque, _cfg.Ffb.ForceSign, _estopGain);
             _device.Set(output);
             LastTorque = output;
 
@@ -219,9 +283,10 @@ public sealed class FfbEngine : IDisposable
     {
         if (!_device.Ready) return (false, "Motor test: FFB device not running: " + _device.Status);
         if (Killed) return (false, "Motor test: FFB is KILLED. Resume it first");
+        if (EStop) return (false, "Motor test: the dashboard's e-stop or park holds the force at zero. Resume it first");
         var before = _wheel.State?.AngleDegrees;
         if (before is null) return (false, "Motor test: no wheel data");
-        _override = 0.12f;
+        _override = MotorTestPush(BaseScale);
         await Task.Delay(300);
         var after = _wheel.State?.AngleDegrees;
         _override = 0f;
@@ -229,7 +294,10 @@ public sealed class FfbEngine : IDisposable
         _override = float.NaN;
         if (after is null) return (false, "Motor test: lost wheel data");
         float moved = after.Value - before.Value;
-        if (Math.Abs(moved) < 1) return (false, $"Motor test: the wheel only moved {moved:F1}°. Were your hands on it? Nothing changed");
+        if (Math.Abs(moved) < 1)
+            return (false, $"Motor test: the wheel only moved {moved:F1}°. Were your hands on it? Nothing changed" +
+                (_cfg.Ffb.RatedNm <= 0 && _cfg.Ffb.BaseScale <= 0
+                    ? ". If they were off: enter your wheelbase's rated torque in Setup (a base whose torque is not known gets the gentlest push)" : ""));
         _cfg.Ffb.ForceSign = moved > 0 ? 1 : -1;
         _cfg.Ffb.ForceSignTested = true;
         return (true, $"Motor test: +torque moved the wheel {moved:+0.0;-0.0}°, ForceSign {_cfg.Ffb.ForceSign}");

@@ -5,15 +5,20 @@ public sealed class FfbConfig
 {
     public bool Enabled { get; set; } = true;
     /// <summary>
-    /// Overall strength, 0..1. 1 = the feel the profiles were tuned for on a 3.9 Nm R3. The bridge also scales by the
-    /// connected base (see <see cref="BaseScale"/>), so 1 on an R21 is not 21 Nm.
+    /// Overall strength, 0..1. 1 = the feel the profiles were tuned for on a 3.9 Nm MOZA R3 (the bridge's author's base).
+    /// The output is also scaled by the base's rated torque (see <see cref="BaseScale"/>), so 1 on a 20 Nm base is not 20 Nm.
     /// </summary>
     public float MasterGain { get; set; } = 1.0f;
     /// <summary>
-    /// Output scale for the wheelbase: 0 = automatic from the detected model (<see cref="Wheelbase.AutoScale"/>,
-    /// conservative for untested bases), otherwise a fixed fraction of the base's full torque chosen by the user.
+    /// Output scale for the wheelbase: 0 = automatic from <see cref="RatedNm"/> (<see cref="FfbEngine.AutoScale"/>: about
+    /// R3-equivalent newton-metres × 0.85), otherwise a fixed fraction of the base's full torque chosen by the user.
     /// </summary>
     public float BaseScale { get; set; } = 0;
+    /// <summary>
+    /// The base's rated peak torque in N·m, from its maker (changes/0349). 0 = not entered yet: a strong base is assumed
+    /// (<see cref="FfbEngine.AssumedNm"/>), so the force starts small.
+    /// </summary>
+    public float RatedNm { get; set; } = 0;
     /// <summary>+1 or -1 so that positive torque turns the wheel toward positive angle (right). Set by the [T] motor test.</summary>
     public int ForceSign { get; set; } = 1;
     /// <summary>
@@ -21,8 +26,13 @@ public sealed class FfbConfig
     /// spring pushes away from center (force center slammed the wheel from stop to stop on a fresh install).
     /// </summary>
     public bool ForceSignTested { get; set; }
-    /// <summary>Used only if no MOZA base (USB vendor 346E) is found: part of the DirectInput product name to drive.</summary>
-    public string Device { get; set; } = "MOZA";
+    /// <summary>
+    /// The force-feedback base, by its DirectInput instance: picked in Setup, never chosen automatically (changes/0349).
+    /// Empty: no force at all until one is picked.
+    /// </summary>
+    public Guid DeviceInstance { get; set; }
+    /// <summary>Its name when it was picked (for display only).</summary>
+    public string DeviceName { get; set; } = "";
     public int UpdateHz { get; set; } = 500;
     /// <summary>Telemetry older than this is treated as lost and forces fade out.</summary>
     public float StaleMs { get; set; } = 120;
@@ -61,7 +71,9 @@ public sealed class FfbConfig
 
     // Shape parameters (from the 2026-10-13 tuning recording).
     public float AligningPeakSlipDeg { get; set; } = 10f;
-    public float LoadReference { get; set; } = 12f;        // lateral "g" (v·yaw/981) that gives full load; p90 was 11.5
+    // lateral "g" (v·yaw/981) that gives full load. changes/0349: the yaw is the heading-derived rate (Vnsg), whose
+    // land speeder p90 is 11.3 (the bridge tuned 12 on the game's own AngVelZ, p90 12.6): 12 x 11.28 / 12.60
+    public float LoadReference { get; set; } = 10.5f;
     public float ImpactReference { get; set; } = 3000f;    // PointVelocityDelta for a full-strength kick; p90 2191, p99 5055
     public float ImpactDecayMs { get; set; } = 70f;
     public float AirCentering { get; set; } = 0.15f;       // fraction of centering kept while airborne
@@ -73,7 +85,7 @@ public sealed class FfbConfig
     /// <summary>
     /// The per-vehicle feel a profile carries (plus every layer's gain and on/off). Everything else belongs to the
     /// wheelbase or the user: above all MasterGain, so a profile tuned on a 3.9 Nm R3 can never switch a 21 Nm base
-    /// to full torque; also ForceSign, Device, the update rate, mute choices and the force-center hold.
+    /// to full torque; also ForceSign, the device and its rated torque, the update rate, mute choices and the force-center hold.
     /// </summary>
     private static readonly string[] FeelProps =
     [
@@ -108,11 +120,32 @@ public sealed class FfbConfig
     }
 
     /// <summary>Fixes nulls and out-of-range values from a hand-edited file (see <see cref="BridgeConfig.Sanitize"/>).</summary>
+    /// <summary>
+    /// Setup picked a wheelbase (changes/0349). Another base than before starts untested and at automatic strength for an
+    /// unknown torque: no force until its own motor test, and sized for a strong base until its torque is entered.
+    /// Returns true when it was another base.
+    /// </summary>
+    public bool ChooseDevice(Guid instance, string name)
+    {
+        bool other = instance != DeviceInstance;
+        if (other)
+        {
+            ForceSign = 1;
+            ForceSignTested = false;
+            RatedNm = 0;
+            BaseScale = 0;
+        }
+        DeviceInstance = instance;
+        DeviceName = name ?? "";
+        return other;
+    }
+
     public void Sanitize()
     {
         static float C(float v, float min, float max, float fallback) => BridgeConfig.Clamp(v, min, max, fallback);
         var d = new FfbConfig();
-        Device ??= d.Device;
+        DeviceName ??= "";
+        RatedNm = C(RatedNm, 0, 60, 0);
         Layers ??= [];
         foreach (var key in Layers.Where(kv => kv.Value is null).Select(kv => kv.Key).ToList()) Layers.Remove(key);
         // Layers added in newer builds get their defaults; existing tuning is kept.

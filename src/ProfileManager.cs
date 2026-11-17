@@ -136,4 +136,44 @@ public sealed class ProfileManager
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
     }
+
+    private const string EmbeddedPrefix = "defaults/profiles/";
+
+    /// <summary>
+    /// The shipped profiles inside the exe, by file name (changes/0349): the dashboard downloads the exe alone, with no
+    /// defaults folder beside it.
+    /// </summary>
+    public static IReadOnlyList<(string Name, byte[] Bytes)> EmbeddedDefaults(System.Reflection.Assembly? assembly = null)
+    {
+        assembly ??= typeof(ProfileManager).Assembly;
+        var list = new List<(string Name, byte[] Bytes)>();
+        foreach (string res in assembly.GetManifestResourceNames().OrderBy(n => n, StringComparer.Ordinal))
+        {
+            if (!res.StartsWith(EmbeddedPrefix, StringComparison.Ordinal) || !res.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) continue;
+            using var s = assembly.GetManifestResourceStream(res);
+            if (s is null) continue;
+            using var ms = new MemoryStream();
+            s.CopyTo(ms);
+            list.Add((res[EmbeddedPrefix.Length..], ms.ToArray()));
+        }
+        return list;
+    }
+
+    /// <summary>Seeds the profiles inside the exe, by the same rules as the folder: never over an existing profile, never
+    /// one the user deleted.</summary>
+    public static void SeedDefaults(IEnumerable<(string Name, byte[] Bytes)> shipped, string profileDir)
+    {
+        try { System.IO.Directory.CreateDirectory(profileDir); }
+        catch (IOException) { return; }
+        catch (UnauthorizedAccessException) { return; }
+        foreach (var (name, bytes) in shipped)
+        {
+            if (name.Length == 0 || name != Path.GetFileName(name)) continue;   // a name with a folder in it is never written
+            string dst = Path.Combine(profileDir, name);
+            if (File.Exists(dst) || File.Exists(dst + ".deleted")) continue;
+            try { using var f = new FileStream(dst, FileMode.CreateNew, FileAccess.Write); f.Write(bytes); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
 }

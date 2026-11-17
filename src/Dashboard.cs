@@ -56,7 +56,7 @@ public sealed class Dashboard
     }
 
     /// <summary>Pipe / recording status lines (shared by the console dashboard and the GUI).</summary>
-    public string StatusText(PipeReceiver rx, Recorder? rec)
+    public string StatusText(VnsgReceiver rx, Recorder? rec)
     {
         var sb = new StringBuilder();
         lock (_gate)
@@ -68,7 +68,7 @@ public sealed class Dashboard
                 _framesThisSecond = 0;
                 _rateWindow = now;
             }
-            sb.AppendLine($"Pipe: {(rx.Connected ? "CONNECTED" : "waiting for game…")}   rate {_rateHz,6:F1} Hz   frames {rx.FramesReceived}   gaps {_seqGaps}   bad {rx.BadFrames}");
+            sb.AppendLine($"Telemetry (UDP {rx.Port}): {(rx.Connected ? "CONNECTED" : "waiting for Game Link…")}   rate {_rateHz,6:F1} Hz   frames {rx.FramesReceived}   gaps {_seqGaps}   bad {rx.BadFrames}");
             sb.AppendLine(rec is null
                 ? "Rec:  not recording"
                 : $"Rec:  ●●● RECORDING ●●●  {rec.Rows} rows → {rec.Path}");
@@ -123,7 +123,7 @@ public sealed class Dashboard
         get { lock (_gate) return _latest is { } f && f.Has(FrameFlags.HasVehicle) ? f.VehicleClass : null; }
     }
 
-    public void Draw(PipeReceiver rx, Recorder? rec, string? note, string? wheelPanel = null)
+    public void Draw(VnsgReceiver rx, Recorder? rec, string? note, string? wheelPanel = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine("SWGR Wheel Bridge   [K] KILL FFB  [L] force center  [T] motor test  , . master  F1-F12 layers  [ ] anti-deadzone  - = lock");

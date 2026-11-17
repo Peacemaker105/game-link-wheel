@@ -3,9 +3,29 @@ using System.Text.Json.Serialization;
 
 namespace WheelBridge;
 
-/// <summary>User settings, persisted as wheelbridge.json next to the project. Edit the file while the bridge is closed.</summary>
+/// <summary>User settings, persisted as gamelinkwheel.json in the data folder. Edit the file while Game Link Wheel is closed.</summary>
 public sealed class BridgeConfig
 {
+    // ── changes/0349: any DirectInput controller, bound by its instance (the bridge read one MOZA base) ─────────────
+    /// <summary>Controllers that something is bound to, in a fixed order: a button's id carries its device's place here (<see cref="ButtonIds"/>).</summary>
+    public List<DeviceRef> Devices { get; set; } = [];
+    /// <summary>The steering axis (Setup: "turn the wheel to the right"); its direction is set so that right is positive.</summary>
+    public AxisRef? Steering { get; set; }
+    public AxisRef? ThrottleAxis { get; set; }
+    public AxisRef? BrakeAxis { get; set; }
+    public AxisRef? ClutchAxis { get; set; }
+    /// <summary>
+    /// The wheel's rotation lock to lock as set in the base's own software (SimPro Manager on a Simagic, Pit House on a
+    /// MOZA...): the axis covers this many degrees end to end. The angle the force model works with depends on it.
+    /// </summary>
+    public float SteeringTravelDegrees { get; set; } = 900;
+    /// <summary>The user has entered or confirmed <see cref="SteeringTravelDegrees"/> in Setup (until then it is a guess).</summary>
+    public bool TravelConfirmed { get; set; }
+    /// <summary>UDP port the telemetry arrives on: Game Link sends the game's VNSG frames here (changes/0340).</summary>
+    public int TelemetryPort { get; set; } = 4127;
+    /// <summary>UDP port for the dashboard's commands (e-stop, resume, heartbeat), on 127.0.0.1 only.</summary>
+    public int ControlPort { get; set; } = 4128;
+
     /// <summary>Total wheel rotation (lock to lock, degrees) that maps to full stick travel. Arcade handling likes 270–540.</summary>
     public float SteeringLockDegrees { get; set; } = 360;
     /// <summary>Response exponent: 1 = linear, &gt;1 = softer around center.</summary>
@@ -151,6 +171,22 @@ public sealed class BridgeConfig
         foreach (var (k, v) in DefaultVehicleProfiles()) VehicleProfiles.TryAdd(k, v);
         Ffb ??= new();
         Ffb.Sanitize();
+        Devices = Devices?.Where(d => d is not null).ToList() ?? [];
+        foreach (var d in Devices) d.Name ??= "";
+        foreach (var a in new[] { Steering, ThrottleAxis, BrakeAxis, ClutchAxis }) if (a is not null) a.Axis = Math.Clamp(a.Axis, 0, DeviceSnapshot.AxisCount - 1);
+        SteeringTravelDegrees = Clamp(SteeringTravelDegrees, 90, 2520, 900);
+        if (TelemetryPort is < 1024 or > 65535) TelemetryPort = 4127;
+        if (ControlPort is < 1024 or > 65535 || ControlPort == TelemetryPort) ControlPort = TelemetryPort == 4128 ? 4129 : 4128;
+    }
+
+    /// <summary>The slot of a device in <see cref="Devices"/>, added at the end when it is new (a binding from it).</summary>
+    public int SlotOf(Guid instance, string name)
+    {
+        int i = Devices.FindIndex(d => d.Instance == instance);
+        if (i >= 0) return i;
+        // a new list, swapped in whole: the input thread reads this one while the GUI binds
+        Devices = [.. Devices, new DeviceRef { Instance = instance, Name = name }];
+        return Devices.Count - 1;
     }
 
     internal static float Clamp(float v, float min, float max, float fallback) => float.IsFinite(v) ? Math.Clamp(v, min, max) : fallback;
@@ -183,6 +219,23 @@ public sealed class BridgeConfig
         c.Sanitize();
         return c;
     }
+}
+
+/// <summary>A controller something is bound to (changes/0349).</summary>
+public sealed class DeviceRef
+{
+    public Guid Instance { get; set; }
+    public string Name { get; set; } = "";
+}
+
+/// <summary>An axis of a controller: its instance, which axis (<see cref="DeviceSnapshot.AxisNames"/>), and whether to reverse it.</summary>
+public sealed class AxisRef
+{
+    public Guid Device { get; set; }
+    public string DeviceName { get; set; } = "";
+    public int Axis { get; set; }
+    public bool Invert { get; set; }
+    public string Describe() => $"{DeviceName} {DeviceSnapshot.AxisNames[Math.Clamp(Axis, 0, DeviceSnapshot.AxisCount - 1)]}{(Invert ? " (reversed)" : "")}";
 }
 
 public sealed class PedalButton

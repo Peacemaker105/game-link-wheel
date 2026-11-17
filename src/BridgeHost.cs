@@ -1,22 +1,30 @@
+using System.Globalization;
+using System.Text.Json;
+
 namespace WheelBridge;
 
+/// <summary>How the host was started (Program's arguments).</summary>
+public sealed record HostOptions(int? TelemetryPort = null, int? ControlPort = null, bool RequireHeartbeat = false);
+
 /// <summary>
-/// Everything the bridge runs (telemetry pipe, shared memory, wheel input, virtual pad, FFB), wired together.
-/// Used by both the console dashboard and the GUI.
+/// Everything Game Link Wheel runs (telemetry from Game Link, the controllers, the virtual pad, FFB, the dashboard's
+/// control link), wired together. Used by both the console dashboard and the GUI. (From SWGR Wheel Bridge's BridgeHost:
+/// changes/0349 replaced its named pipe and shared memory with Game Link's UDP frames, and its MOZA SDK with DirectInput.)
 /// </summary>
 public sealed class BridgeHost : IDisposable
 {
-    public const string PipeName = "swgr_wheelbridge";
-
-    /// <summary>Where wheelbridge.json, profiles and recordings live (see <see cref="ResolveDataDir"/>).</summary>
+    /// <summary>
+    /// Where gamelinkwheel.json, profiles and recordings live: VNM_GAMELINK_WHEEL_HOME if set (the tests do), otherwise
+    /// beside the dashboard's own data (%APPDATA%\vn-motion-dashboard\game-link-wheel), never in the install folder,
+    /// which an update replaces.
+    /// </summary>
     public static readonly string DataDir = ResolveDataDir();
-    public static readonly string ConfigPath = Path.Combine(DataDir, "wheelbridge.json");
+    public static readonly string ConfigPath = Path.Combine(DataDir, "gamelinkwheel.json");
     public static readonly string ProfileDir = Path.Combine(DataDir, "profiles");
-    public static readonly string RecordDir = ResolveRecordDir();
+    public static readonly string RecordDir = Path.Combine(DataDir, "recordings");
 
     private readonly CancellationTokenSource _cts = new();
-    private readonly SharedMemoryPublisher _shm;
-    private readonly Task _rxTask;
+    private readonly Task _rxTask, _controlTask;
     private readonly object _recLock = new();
     private Recorder? _recorder;
 
@@ -26,26 +34,30 @@ public sealed class BridgeHost : IDisposable
     public VirtualPad Pad { get; }
     public FfbEngine Ffb { get; }
     public PedalCalibrator Calibrator { get; } = new();
-    public PipeReceiver Receiver { get; }
+    public VnsgReceiver Receiver { get; }
+    public ControlLink Control { get; }
     public ProfileManager Profiles { get; }
     public Recorder? Recorder { get { lock (_recLock) return _recorder; } }
-    /// <summary>Last error from handling a frame (recording, publishing); the stream itself keeps going.</summary>
+    /// <summary>Last error from handling a frame (recording); the stream itself keeps going.</summary>
     public string? FrameError { get; private set; }
 
-    public BridgeHost()
+    public BridgeHost(HostOptions? options = null)
     {
+        options ??= new();
+        // The shipped profiles are inside the exe (the dashboard downloads it alone, changes/0349); a defaults folder
+        // beside it, as a build leaves one, can only add to them.
+        ProfileManager.SeedDefaults(ProfileManager.EmbeddedDefaults(), ProfileDir);
         ProfileManager.SeedDefaults(Path.Combine(AppContext.BaseDirectory, "defaults", "profiles"), ProfileDir);
         Config = BridgeConfig.Load(ConfigPath);
+        if (options.TelemetryPort is { } tp) Config.TelemetryPort = tp;
+        if (options.ControlPort is { } cp) Config.ControlPort = cp;
         Profiles = new ProfileManager(Config, ProfileDir, SaveConfig);
-        _shm = new SharedMemoryPublisher();
-        Wheel = new WheelInput();
+        Wheel = new WheelInput(Config);
         Pad = new VirtualPad(Wheel, Config);
         Ffb = new FfbEngine(Config, Wheel, Pad);
         Pad.HoldStickCentered = () => Ffb.CenterLock;
-        Receiver = new PipeReceiver(PipeName, (frame, raw) =>
+        Receiver = new VnsgReceiver(Config.TelemetryPort, (frame, _) =>
         {
-            // One failing consumer (a full disk under the recorder, say) must not stop telemetry for the others.
-            try { _shm.Publish(raw); } catch (Exception ex) { FrameError = "shared memory: " + ex.Message; }
             Dashboard.OnFrame(frame);
             Ffb.OnFrame(frame);
             Pad.Telemetry = (frame.Has(FrameFlags.OnFoot), DateTime.UtcNow);
@@ -60,10 +72,37 @@ public sealed class BridgeHost : IDisposable
                 }
             }
         });
+        Control = new ControlLink(Config.ControlPort, on => Ffb.EStop = on, StatusJson, options.RequireHeartbeat);
         _rxTask = Task.Run(() => Receiver.RunAsync(_cts.Token));
+        _controlTask = Task.Run(() => Control.RunAsync(_cts.Token));
     }
 
-    /// <summary>Saves wheelbridge.json. Never throws (it runs from timers and key handlers): a failure is reported through <see cref="FrameError"/>.</summary>
+    /// <summary>One JSON line for the dashboard's panel ("status" on the control link).</summary>
+    public string StatusJson()
+    {
+        var ci = CultureInfo.InvariantCulture;
+        return JsonSerializer.Serialize(new
+        {
+            t = "status",
+            telemetry = Receiver.Connected,
+            frames = Receiver.FramesReceived,
+            wheel = Wheel.Status,
+            device = Ffb.DeviceName,
+            ffb = Ffb.DeviceStatus,
+            loopHz = Math.Round(Ffb.LoopHz, 1),
+            state = Ffb.ModelState,
+            estop = Ffb.EStop,
+            killed = Ffb.Killed,
+            needsMotorTest = Ffb.NeedsMotorTest,
+            needsTravel = Ffb.NeedsTravel,
+            estopGain = Math.Round(Ffb.EStopGain, 2),
+            baseScale = Math.Round(Ffb.BaseScale, 3),
+            pad = Pad.Status,
+            torque = Math.Round(Ffb.LastTorque, 3).ToString(ci),
+        });
+    }
+
+    /// <summary>Saves gamelinkwheel.json. Never throws (it runs from timers and key handlers): a failure is reported through <see cref="FrameError"/>.</summary>
     public void SaveConfig()
     {
         try { Config.Save(ConfigPath); }
@@ -73,50 +112,13 @@ public sealed class BridgeHost : IDisposable
     /// <summary>Call regularly (~1–20 Hz) on the UI/console thread: switches profile when the vehicle type changes.</summary>
     public string? PollAutoProfile() => Profiles.OnVehicle(Dashboard.CurrentVehicle);
 
-    // ───────────────────────────── data folder ─────────────────────────────
-
-    /// <summary>
-    /// SWGR_WHEELBRIDGE_HOME if set; else the source folder when running a dev build from its bin\ folder (so the
-    /// existing config keeps working); else next to the exe (portable install); else %LOCALAPPDATA% when the exe
-    /// folder is read-only (e.g. installed under Program Files).
-    /// </summary>
     private static string ResolveDataDir()
     {
-        if (Environment.GetEnvironmentVariable("SWGR_WHEELBRIDGE_HOME") is { Length: > 0 } env) return Ensure(env);
-        string exeDir = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
-        // Dev builds run from <project>\bin\Release\net10.0-windows or <project>\bin\run.
-        var d = new DirectoryInfo(exeDir);
-        for (int up = 0; up < 3 && d.Parent is not null; up++)
-        {
-            d = d.Parent;
-            if (File.Exists(Path.Combine(d.FullName, "WheelBridge.csproj"))) return d.FullName;
-        }
-        if (IsWritable(exeDir)) return exeDir;
-        return Ensure(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SWGR Wheel Bridge"));
-    }
-
-    /// <summary>Dev builds keep recording into the workspace's Dumps\recordings; installs use a recordings folder in the data folder.</summary>
-    private static string ResolveRecordDir()
-    {
-        string dumps = Path.Combine(Path.GetDirectoryName(DataDir) ?? DataDir, "Dumps");
-        return File.Exists(Path.Combine(DataDir, "WheelBridge.csproj")) && Directory.Exists(dumps)
-            ? Path.Combine(dumps, "recordings")
-            : Path.Combine(DataDir, "recordings");
+        if (Environment.GetEnvironmentVariable("VNM_GAMELINK_WHEEL_HOME") is { Length: > 0 } env) return Ensure(env);
+        return Ensure(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "vn-motion-dashboard", "game-link-wheel"));
     }
 
     private static string Ensure(string dir) { Directory.CreateDirectory(dir); return dir; }
-
-    private static bool IsWritable(string dir)
-    {
-        try
-        {
-            string probe = Path.Combine(dir, $".write-test-{Environment.ProcessId}");
-            File.WriteAllText(probe, "");
-            File.Delete(probe);
-            return true;
-        }
-        catch { return false; }
-    }
 
     // ───────────────────────────── recording / calibration ─────────────────────────────
 
@@ -162,12 +164,13 @@ public sealed class BridgeHost : IDisposable
     public void Dispose()
     {
         _cts.Cancel();
-        // FFB first so the force is zeroed while the wheel is still being read, then the pad, then the SDK.
+        // FFB first so the force is zeroed while the wheel is still being read, then the pad, then the input.
         Ffb.Dispose();
         Pad.Dispose();
         Wheel.Dispose();
         lock (_recLock) { _recorder?.Dispose(); _recorder = null; }
-        try { _rxTask.Wait(1000); } catch { }
-        _shm.Dispose();
+        try { Task.WaitAll([_rxTask, _controlTask], 1000); } catch { }
+        Receiver.Dispose();
+        Control.Dispose();
     }
 }

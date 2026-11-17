@@ -6,11 +6,13 @@ namespace WheelBridge.Gui;
 /// <summary>
 /// Tuning window: every steering and FFB setting as live sliders/checkboxes, per-layer output meters,
 /// named profiles, and the same telemetry monitor as the console dashboard. Changes apply immediately
-/// (the FFB thread reads the shared config) and are autosaved to wheelbridge.json.
+/// (the FFB thread reads the shared config) and are autosaved to gamelinkwheel.json.
+/// changes/0349: from SWGR Wheel Bridge's window; the MOZA SDK download is gone (DirectInput reads any wheel), the
+/// Wheel &amp; devices tab shows what Setup bound, and the strength follows the rated torque entered there.
 /// </summary>
 public sealed class MainForm : Form
 {
-    public static void Run()
+    public static void Run(HostOptions options)
     {
         // WinForms needs an STA thread; the top-level program is async (MTA).
         var t = new Thread(() =>
@@ -18,7 +20,7 @@ public sealed class MainForm : Form
             Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            using var host = new BridgeHost();
+            using var host = new BridgeHost(options);
             Application.Run(new MainForm(host));
         });
         t.SetApartmentState(ApartmentState.STA);
@@ -40,8 +42,7 @@ public sealed class MainForm : Form
     private DateTime _nextGameCheck, _launchedAt = DateTime.MinValue;
     private bool _gameRunning;
 
-    private Button _launch = null!, _kill = null!, _center = null!, _motorTest = null!, _record = null!, _calibrate = null!, _getSdk = null!;
-    private bool _sdkBusy;
+    private Button _launch = null!, _kill = null!, _center = null!, _motorTest = null!, _record = null!, _calibrate = null!;
     private bool _centerShown;
     private string? _lastFrameError;
     private ComboBox _profiles = null!;
@@ -54,7 +55,7 @@ public sealed class MainForm : Form
     public MainForm(BridgeHost host)
     {
         _host = host;
-        Text = "SWGR Wheel Bridge";
+        Text = "Game Link Wheel";
         AutoScaleMode = AutoScaleMode.Dpi;
         Font = new Font("Segoe UI", 9f);
         ClientSize = new Size(1500, 940);
@@ -78,7 +79,7 @@ public sealed class MainForm : Form
         LoadProfileList();
         UpdateProfileLabel();
         if (Cfg.LoadWarning is { } warning)
-            Load += (_, _) => MessageBox.Show(this, warning, "SWGR Wheel Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            Load += (_, _) => MessageBox.Show(this, warning, "Game Link Wheel", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
         _ui.Tick += (_, _) => RefreshLive();
         _ui.Start();
@@ -105,6 +106,7 @@ public sealed class MainForm : Form
         {
             var ffb = _host.Ffb;
             if (!ffb.CenterLock && ffb.Racing) { Say("Force center is only available outside a race"); return; }
+            if (!ffb.CenterLock && ffb.NeedsTravel) { Say("Force center needs your wheel's rotation: enter it in Setup first"); return; }
             if (!ffb.CenterLock && ffb.NeedsMotorTest)
             {
                 // With an untested motor direction the hold could push the wheel away from center.
@@ -151,11 +153,7 @@ public sealed class MainForm : Form
         onTop.CheckedChanged += (_, _) => TopMost = onTop.Checked;
         Tip(onTop, Tips.AlwaysOnTop);
 
-        _getSdk = new Button { Text = "⬇ Get MOZA SDK", Height = 34, AutoSize = true, Font = new Font(Font, FontStyle.Bold), BackColor = Color.Gold, Visible = false };
-        _getSdk.Click += async (_, _) => await GetSdkAsync();
-        Tip(_getSdk, Tips.GetSdk);
-
-        bar.Controls.AddRange([_getSdk, _launch, _kill, _center, _motorTest, _record, _calibrate,
+        bar.Controls.AddRange([_launch, _kill, _center, _motorTest, _record, _calibrate,
             new Label { Text = "Profile:", AutoSize = true, Margin = new Padding(16, 11, 0, 3) },
             _profiles, load, save, saveAs, delete, _profileLabel, auto, onTop]);
         return bar;
@@ -181,6 +179,8 @@ public sealed class MainForm : Form
         ffbPage.Controls.Add(BuildFfbPage());
         top.TabPages.Add(ffbPage);
         top.TabPages.Add(BuildBindingsTab());
+        top.TabPages.Add(_devicesPage = BuildDevicesTab());
+        _topTabs = top;
         return top;
     }
 
@@ -204,11 +204,11 @@ public sealed class MainForm : Form
         AddSlider(grid, "Base strength (0 = auto)", Tips.BaseScale, 0, 1, 0.01f, 2,
             () => Cfg.Ffb.BaseScale, v =>
             {
-                // Raising it above the automatic value on an untested base needs a deliberate yes.
-                var ffbEngine = _host.Ffb;
-                float auto = (ffbEngine.Base ?? Wheelbase.Unknown()).AutoScale;
-                if (v > auto + 0.001f && Cfg.Ffb.BaseScale <= auto + 0.001f && ffbEngine.Base is not { Tested: true }
-                    && MessageBox.Show(this, $"The automatic strength for this wheelbase is ×{auto:0.00}. Only the R3 has been tested.\n\n" +
+                // Raising it above the automatic value needs a deliberate yes. changes/0349: no base is tested through
+                // DirectInput, so that is every base.
+                float auto = FfbEngine.AutoScale(Cfg.Ffb.RatedNm);
+                if (v > auto + 0.001f && Cfg.Ffb.BaseScale <= auto + 0.001f
+                    && MessageBox.Show(this, $"The automatic strength is ×{auto:0.00} ({RatedText()}).\n\n" +
                         "A higher value can make impacts and force center very strong on a powerful base. Keep your hands clear and raise it in small steps.\n\nContinue?",
                         "Base strength", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK)
                 {
@@ -482,10 +482,9 @@ public sealed class MainForm : Form
             UpdateProfileLabel();
         }
         if ((_host.FrameError ?? ffb.LastError) is { } fe && fe != _lastFrameError) { _lastFrameError = fe; Say(fe); }
-        _getSdk.Visible = _host.Wheel.SdkMissing || _sdkBusy;
-        if (!_sdkPrompted && _host.Wheel.SdkMissing) { _sdkPrompted = true; BeginInvoke(new Action(async () => await GetSdkAsync())); }
-        // First run: once the wheel is readable, walk the user through the motor test, pedals and controls.
-        if (!Cfg.SetupDone && !_setupShown && !_sdkBusy && _host.Wheel.State is not null) { _setupShown = true; BeginInvoke(new Action(ShowSetup)); }
+        // First run: walk the user through the wheel, the motor test, pedals and controls. (changes/0349: nothing is
+        // readable until Setup has bound the steering, so it opens at once rather than waiting for the wheel.)
+        if (!Cfg.SetupDone && !_setupShown) { _setupShown = true; BeginInvoke(new Action(ShowSetup)); }
         if (ffb.CenterLockFault is { } fault)
         {
             ffb.CenterLockFault = null;
@@ -511,17 +510,19 @@ public sealed class MainForm : Form
         _calibrate.Text = _host.Calibrator.Active ? $"Calibrating… {_host.Calibrator.SecondsLeft:F0}s" : "Calibrate pedals";
 
         string flags = (ffb.Airborne ? "  AIRBORNE" : "") + (ffb.Wrecked ? "  WRECKED" : "");
-        string power = ffb.Killed ? "KILLED" : !Cfg.Ffb.Enabled ? "disabled" : ffb.NeedsMotorTest ? "OFF until the Motor test has run" : "on";
+        string power = ffb.Killed ? "KILLED" : ffb.EStop ? "E-STOP from the dashboard" : !Cfg.Ffb.Enabled ? "disabled"
+                     : ffb.NeedsMotorTest ? "OFF until the Motor test has run" : ffb.NeedsTravel ? "OFF until the wheel's rotation is entered in Setup" : "on";
         _ffbStatus.Text = $"{power} | {ffb.DeviceStatus} | {ffb.LoopHz:F0} Hz | " +
                           $"sign {Cfg.Ffb.ForceSign:+0;-0} | state: {ffb.ModelState}{flags}" + Environment.NewLine +
-                          $"Wheelbase: {(ffb.Base is { } wb ? wb.Describe(ffb.BaseScale) : "not detected yet")}" +
-                          (Cfg.Ffb.BaseScale > 0 ? " (set by you)" : " (auto)");
+                          $"Wheelbase: {(ffb.DeviceName ?? (Cfg.Ffb.DeviceName.Length > 0 ? Cfg.Ffb.DeviceName : "none chosen"))}, {RatedText()}, " +
+                          $"strength ×{ffb.BaseScale:0.00}" + (Cfg.Ffb.BaseScale > 0 ? " (set by you)" : " (auto)");
         _output.Value = ffb.LastTorque * Cfg.Ffb.ForceSign;   // show in "positive = right" terms
         for (int i = 0; i < _layerBars.Length; i++)
             if (_layerBars[i] is { } b) b.Value = ffb.Contributions[i];
 
         var vehicle = _host.Dashboard.CurrentVehicle;
-        Text = $"SWGR Wheel Bridge | {(vehicle is { } v ? v.ToString() : "no vehicle")} | profile: {Cfg.ActiveProfile ?? "none"}";
+        Text = $"Game Link Wheel | {(vehicle is { } v ? v.ToString() : "no vehicle")} | profile: {Cfg.ActiveProfile ?? "none"}";
+        if (_topTabs.SelectedTab == _devicesPage) _devicesView.Content = DevicesText();
 
         _monitor.Content = _host.Dashboard.StatusText(_host.Receiver, _host.Recorder) + Environment.NewLine
             + WheelPanel.Render(_host.Wheel, _host.Pad, Cfg, _host.Calibrator, _host.Dashboard.GameSteer) + Environment.NewLine
@@ -530,46 +531,66 @@ public sealed class MainForm : Form
         TickBindings();
     }
 
-    // ───────────────────────────── MOZA SDK ─────────────────────────────
+    // ───────────────────────────── wheel & devices (changes/0349) ─────────────────────────────
 
-    private bool _sdkPrompted;
+    private TabControl _topTabs = null!;
+    private TabPage _devicesPage = null!;
+    private MonitorView _devicesView = null!;
 
-    /// <summary>
-    /// The MOZA SDK can't be shipped with the bridge, so the user gets it from MOZA: download (from MOZA's own
-    /// server) or install from a MOZA_SDK.zip they downloaded themselves.
-    /// </summary>
-    private async Task GetSdkAsync()
+    private TabPage BuildDevicesTab()
     {
-        if (_sdkBusy || MozaSdk.Available) return;
-        var choice = MessageBox.Show(this,
-            "The bridge needs the MOZA SDK to read your wheel. MOZA does not allow it to be shipped with the bridge, " +
-            "so you get it from MOZA:\n\n" +
-            $"Yes: download it now from MOZA ({MozaSdk.DownloadUrl}, about 57 MB). Only the three 64-bit SDK files are kept.\n" +
-            $"No: choose a MOZA_SDK.zip that you downloaded from {MozaSdk.SdkPage}.\n" +
-            "Cancel: not now.\n\nBy installing it you use MOZA's software under MOZA's terms.",
-            "Get the MOZA SDK", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Information);
-        if (choice == DialogResult.Cancel) return;
+        var page = new TabPage("Wheel & devices") { Padding = new Padding(6) };
+        var setup = new Button { Text = "Set up wheel, pedals and buttons…", AutoSize = true, Height = 34, Dock = DockStyle.Top, Font = new Font(Font, FontStyle.Bold) };
+        setup.Click += (_, _) => ShowSetup();
+        Tip(setup, Tips.RunSetup);
+        _devicesView = new MonitorView { Dock = DockStyle.Fill };
+        page.Controls.Add(_devicesView);
+        page.Controls.Add(setup);
+        return page;
+    }
 
-        bool Confirm(string what) => MessageBox.Show(this, what + "\n\nMOZA may have released a newer SDK. It might not work with the bridge. Install it anyway?",
-            "MOZA SDK version", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes;
+    /// <summary>"5 Nm" or what an unknown torque means.</summary>
+    private string RatedText() => Cfg.Ffb.RatedNm > 0 ? $"rated {Cfg.Ffb.RatedNm:0.#} Nm" : $"torque not entered: taken as {FfbEngine.AssumedNm:0} Nm";
 
-        MozaSdk.InstallResult result;
-        _sdkBusy = true;
-        _getSdk.Enabled = false;
-        try
+    /// <summary>What Setup bound and what is attached now, for the Wheel &amp; devices tab.</summary>
+    private string DevicesText()
+    {
+        var sb = new System.Text.StringBuilder();
+        var f = Cfg.Ffb;
+        sb.AppendLine("FORCE FEEDBACK WHEELBASE");
+        sb.AppendLine($"  {(f.DeviceInstance == Guid.Empty ? "none chosen (no force feedback)" : f.DeviceName)}");
+        sb.AppendLine($"  {_host.Ffb.DeviceStatus}");
+        sb.AppendLine($"  {RatedText()}, strength ×{_host.Ffb.BaseScale:0.00}{(f.BaseScale > 0 ? " (set by you)" : " (auto)")}");
+        sb.AppendLine($"  motor direction {(f.ForceSignTested ? $"tested ({f.ForceSign:+0;-0})" : "not tested: no force until the Motor test")}");
+        sb.AppendLine();
+        sb.AppendLine("STEERING");
+        sb.AppendLine($"  {(Cfg.Steering?.Describe() ?? "not set: Setup asks you to turn the wheel")}   {_host.Wheel.Status}");
+        sb.AppendLine($"  rotation {Cfg.SteeringTravelDegrees:F0}° lock to lock{(Cfg.TravelConfirmed ? "" : " (a guess: no force until it is entered in Setup)")}");
+        sb.AppendLine();
+        sb.AppendLine("PEDALS");
+        foreach (var (name, ax, range) in new[] { ("throttle", Cfg.ThrottleAxis, Cfg.Throttle), ("brake", Cfg.BrakeAxis, Cfg.Brake), ("clutch", Cfg.ClutchAxis, Cfg.Clutch) })
+            sb.AppendLine($"  {name,-9} {(ax is null ? "not set" : ax.Describe() + (range is null ? "  (not calibrated)" : ""))}");
+        sb.AppendLine();
+        sb.AppendLine("CONTROLLERS WITH BOUND BUTTONS");
+        var attached = _host.Wheel.Devices;
+        if (Cfg.Devices.Count == 0) sb.AppendLine("  none yet");
+        for (int i = 0; i < Cfg.Devices.Count; i++)
         {
-            if (choice == DialogResult.Yes)
-                result = await MozaSdk.DownloadAsync(Confirm, new Progress<string>(Say));
-            else
-            {
-                using var open = new OpenFileDialog { Title = "Choose MOZA_SDK.zip", Filter = "MOZA SDK (*.zip)|*.zip", FileName = "MOZA_SDK.zip" };
-                if (open.ShowDialog(this) != DialogResult.OK) return;
-                result = MozaSdk.InstallFromZip(open.FileName, Confirm);
-            }
+            var d = Cfg.Devices[i];
+            bool on = WheelInput.FindDevice(attached, d.Instance, d.Name, Cfg) is not null;
+            sb.AppendLine($"  {i + 1}. {d.Name}{(on ? "" : "  (not connected)")}");
         }
-        finally { _sdkBusy = false; _getSdk.Enabled = true; }
-        Say(result.Message);
-        if (!result.Ok) MessageBox.Show(this, result.Message, "MOZA SDK", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        sb.AppendLine();
+        sb.AppendLine("ATTACHED CONTROLLERS (live)");
+        if (attached.Count == 0) sb.AppendLine("  none found: is the wheel plugged in and switched on?");
+        foreach (var d in attached)
+        {
+            sb.AppendLine($"  {d.Name}");
+            sb.AppendLine("    " + string.Join("  ", d.Axes.Select((v, a) => $"{DeviceSnapshot.AxisNames[a]} {v,5}")));
+            var held = BindCapture.RawPressed([d]).Select(x => ButtonIds.Describe(x.Item2, new BridgeConfig())).ToList();
+            sb.AppendLine($"    held: {(held.Count == 0 ? "-" : string.Join(", ", held))}");
+        }
+        return sb.ToString();
     }
 
     // ───────────────────────────── controls (bindings) ─────────────────────────────
@@ -681,11 +702,11 @@ public sealed class MainForm : Form
 
     private void StartCapture(string control)
     {
-        if (_host.Wheel.State is not { } s) { Say("Can't bind: no wheel data. Is Pit House running?"); return; }
+        if (_host.Wheel.State is not { } s) { Say($"Can't bind: {_host.Wheel.Status}. Run setup first"); return; }
         _capture = new BindCapture(control, s, Cfg, CaptureTime);
         bool trigger = control is "RT" or "LT";
-        Say(trigger ? $"{control}: press the wheel button that should press {control} fully…"
-                    : $"{control}: press a wheel button, or push a pedal past half way…");
+        Say(trigger ? $"{control}: press the button (on the wheel or any controller) that should press {control} fully…"
+                    : $"{control}: press a button on the wheel or any controller, or push a pedal past half way…");
     }
 
     /// <summary>Runs at the UI rate: live indicators, binding text, and the capture of a new binding.</summary>

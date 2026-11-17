@@ -1,0 +1,64 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Game Link Wheel (changes/0349, part 2): force feedback and controls for STAR WARS Galactic Racer on any DirectInput
+    wheel, forked from SWGR Wheel Bridge 0.1 (MIT, LICENSE beside this folder). The MOZA SDK is gone: wheel, pedals and
+    buttons are read through DirectInput, the telemetry is the VNSG frame Game Link forwards over UDP (changes/0340).
+    Published self-contained as one file (nothing for a customer to install but ViGEmBus); tools/build-game-link-wheel.js
+    runs the publish into plugins/game-link/wheel. Never in the dashboard's installer: the dashboard downloads it when the
+    user asks for force feedback (changes/0349, "on demand").
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- GUI by default (the exe frees its console); the console switch gives the text dashboard. Global usings
+         for Forms/Drawing are removed so their names don't leak into the core. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- Controls are built in code, never in the designer. -->
+    <NoWarn>$(NoWarn);WFO1000</NoWarn>
+    <AssemblyName>GameLinkWheel</AssemblyName>
+    <RootNamespace>WheelBridge</RootNamespace>
+    <Version>0.1.0</Version>
+    <Product>VN Motion Game Link Wheel</Product>
+    <Description>Force feedback and controls for STAR WARS: Galactic Racer on any DirectInput wheel</Description>
+    <Copyright>Game Link Wheel: VN Motion. SWGR Wheel Bridge: MIT, the SWGR Wheel Bridge contributors</Copyright>
+    <!-- Self-contained is given at publish (the publish's self-contained switch, as tools/build-game-link-wheel.js gives
+         it), not here: the test project references this one, and a self-contained exe cannot be referenced (NETSDK1151).
+         No double hyphen in these comments: XML refuses it. -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- English only: Windows Forms' translations into 13 languages (2.5 MB) stay out. The app's own text is English. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <DebugType>embedded</DebugType>
+    <Deterministic>true</Deterministic>
+    <!-- The exe is served from a public URL (changes/0349): it carries no folder of the PC that built it, no repository
+         address and no commit. The embedded PDB keeps its line numbers, under /_/. -->
+    <PathMap>$(MSBuildProjectDirectory)=/_/</PathMap>
+    <EnableSourceLink>false</EnableSourceLink>
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Shipped profiles, copied into the user's profiles folder on start (never over an existing one). -->
+    <None Update="defaults\**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- And inside the exe (changes/0349): the dashboard downloads the exe alone, with no defaults folder beside it. -->
+    <EmbeddedResource Include="defaults\profiles\*.json" LogicalName="defaults/profiles/%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Nefarius.ViGEm.Client" Version="1.21.256" />
+    <PackageReference Include="Vortice.DirectInput" Version="3.8.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+</Project>

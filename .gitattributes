@@ -1,0 +1,4 @@
+# The exe carries each source file's SHA-256 (in its embedded PDB) and the shipped profiles' bytes, so the line endings
+# are pinned: every checkout writes CRLF, whatever its core.autocrlf, and builds the same bytes as the release.
+* text=auto eol=crlf
+*.gz binary
