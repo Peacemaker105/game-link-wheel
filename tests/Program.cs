@@ -68,6 +68,10 @@ var tests = new List<(string Name, Action Body)>
     ("control link: deaf to the dashboard holds the force at zero", SafetyTests.ControlDeaf),
     ("control link: commands and status over UDP on loopback", SafetyTests.ControlUdp),
     ("control link: quit holds the force at zero, then asks the program to close, once", SafetyTests.ControlQuit),
+    ("windows: every setup page scaled with the screen: no sideways scroll, no cut-off or overlapping text (0.1.3)", GuiTests.SetupPages),
+    ("windows: every main window tab scaled with the screen: no cut-off or overlapping text, every tab title (0.1.3)", GuiTests.MainTabs),
+    ("windows: a short main window scrolls the force feedback page and keeps the tabs under it (0.1.3)", GuiTests.MainWindowShort),
+    ("windows: the profile name prompt scaled with the screen, nothing cut off (0.1.3)", GuiTests.PromptBox),
 };
 
 // Keep the tests' data out of any real data folder.

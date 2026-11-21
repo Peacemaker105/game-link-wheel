@@ -54,22 +54,39 @@ public sealed class MainForm : Form
     private MonitorView _monitor = null!;
     private SteeringCurve _curve = null!;
     private ToolStripStatusLabel _message = null!;
+    // 0.1.3 (Chris, 2026-11-18: "the main settings page needs a scroll down to see wheel settings and stuff"): the force
+    // feedback page scrolls, and keeps at least this much height (logical pixels) for the tabs under its panel
+    public const int MinTabsHeight = 320;
+    public TabPage FfbPage { get; private set; } = null!;
+    public GroupBox FfbGroup { get; private set; } = null!;
+    // 0.1.3: the settings side is never narrower than this (logical pixels). Narrower, the sliders shrank to nothing and labels
+    // ran into the number boxes; the monitor beside it gives way instead, down to MonitorMinWidth.
+    public const int SettingsMinWidth = 720, MonitorMinWidth = 150;
+    public SplitContainer Split { get; private set; } = null!;
+    private TabControl _underTabs = null!;
+    private bool _fitting;
 
     public MainForm(BridgeHost host)
     {
         _host = host;
-        Text = "Game Link Wheel";
+        // 0.1.3 (Chris, 2026-11-21: "make all the screens scaled nicely and no text overlaps"): scaled with the screen. Without
+        // AutoScaleDimensions WinForms scales only the fonts, so at 150 % the text grew while every width and height here stayed
+        // in raw pixels: labels ran into the sliders and the setup page needed a sideways scroll. The sizes are written for
+        // 96 dpi (100 %); the layout stays suspended to the end of the constructor, so the scaling covers every control built here.
+        SuspendLayout();
+        AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
+        Text = "Game Link Wheel";
         Font = new Font("Segoe UI", 9f);
         ClientSize = new Size(1500, 940);
-        MinimumSize = new Size(1100, 700);
+        MinimumSize = new Size(900, 560);   // 0.1.3: was 1100 x 700, more than a 1080-line screen at 150 %
         StartPosition = FormStartPosition.CenterScreen;
 
         var status = new StatusStrip();
         _message = new ToolStripStatusLabel($"Config: {BridgeHost.ConfigPath}") { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
         status.Items.Add(_message);
 
-        var split = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 820, FixedPanel = FixedPanel.Panel2 };
+        var split = Split = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 820, FixedPanel = FixedPanel.Panel2 };
         split.Panel1.Controls.Add(BuildControls());
         _monitor = new MonitorView { Dock = DockStyle.Fill };
         split.Panel2.Controls.Add(_monitor);
@@ -77,7 +94,17 @@ public sealed class MainForm : Form
         Controls.Add(split);
         Controls.Add(BuildToolbar());
         Controls.Add(status);
-        Load += (_, _) => split.SplitterDistance = (int)(ClientSize.Width * 0.56);
+        Load += (_, _) =>
+        {
+            FitToScreen(this);   // 0.1.3: 1500 x 940 is taller than a 1080-line screen at 125 %
+            split.SplitterDistance = (int)(ClientSize.Width * 0.56);
+            KeepSplit();
+            FitFfbPage();
+        };
+        // 0.1.3: the settings keep their minimum width whatever the window or the splitter does (the monitor gives way)
+        split.SizeChanged += (_, _) => KeepSplit();
+        split.SplitterMoved += (_, _) => KeepSplit();
+        DpiChanged += (_, _) => BeginInvoke(new Action(() => { KeepSplit(); FitFfbPage(); }));
 
         LoadProfileList();
         UpdateProfileLabel();
@@ -90,6 +117,8 @@ public sealed class MainForm : Form
         _ui.Start();
         _autosave.Tick += (_, _) => { _autosave.Stop(); _host.SaveConfig(); };
         FormClosing += (_, _) => { _ui.Stop(); if (_autosave.Enabled) { _autosave.Stop(); _host.SaveConfig(); } };
+        ResumeLayout(false);   // 0.1.3: the scaling to this screen's dpi happens here, over everything built above
+        PerformLayout();
     }
 
     // ───────────────────────────── layout ─────────────────────────────
@@ -180,13 +209,66 @@ public sealed class MainForm : Form
     {
         // Two pages at the top of the left side: all the force feedback tuning, and the controls (bindings) on their own.
         var top = new TabControl { Dock = DockStyle.Fill, Padding = new Point(24, 6) };
-        var ffbPage = new TabPage("Force feedback");
+        // 0.1.3: the page scrolls when the window is too short for the force feedback panel and the tabs under it
+        var ffbPage = new TabPage("Force feedback") { AutoScroll = true };
+        FfbPage = ffbPage;
         ffbPage.Controls.Add(BuildFfbPage());
         top.TabPages.Add(ffbPage);
         top.TabPages.Add(BuildBindingsTab());
         top.TabPages.Add(_devicesPage = BuildDevicesTab());
         _topTabs = top;
         return top;
+    }
+
+    /// <summary>0.1.3: the force feedback page scrolls rather than squeezing the tabs under its panel. Its height is the panel's
+    /// own height at its width now, plus room for the open tab's settings in full (at least <see cref="MinTabsHeight"/>), so that
+    /// tab never cuts its settings off and never needs a scroll of its own. Fitted again when the panel's width, the open tab
+    /// or the screen's scaling changes.</summary>
+    public void FitFfbPage()
+    {
+        if (_fitting || FfbPage is null || FfbGroup is null || _underTabs is null || FfbPage.Controls.Count == 0) return;
+        _fitting = true;
+        try
+        {
+            var root = FfbPage.Controls[0];
+            int panel = FfbGroup.GetPreferredSize(new Size(FfbGroup.Width, 0)).Height + FfbGroup.Margin.Vertical;
+            int tabs = FfbPage.LogicalToDeviceUnits(MinTabsHeight);
+            if (_underTabs.SelectedTab is { } open && open.Controls.Count > 0)
+            {
+                var area = _underTabs.DisplayRectangle;   // inside the tab titles and the border
+                int need = open.Controls[0].GetPreferredSize(new Size(area.Width - open.Padding.Horizontal, 0)).Height
+                           + open.Padding.Vertical + (_underTabs.Height - area.Height);
+                tabs = Math.Max(tabs, need);
+            }
+            int height = root.Padding.Vertical + panel + tabs + _underTabs.Margin.Vertical;
+            if (FfbPage.AutoScrollMinSize.Height != height) FfbPage.AutoScrollMinSize = new Size(0, height);
+        }
+        finally { _fitting = false; }
+    }
+
+    /// <summary>0.1.3: the splitter is never left where the settings are narrower than <see cref="SettingsMinWidth"/>, or the
+    /// monitor narrower than <see cref="MonitorMinWidth"/> when there is room for both; the settings come first.</summary>
+    private void KeepSplit()
+    {
+        var s = Split;
+        if (s is null || s.Width <= 0) return;
+        int min = LogicalToDeviceUnits(SettingsMinWidth);
+        int roomy = s.Width - s.SplitterWidth - LogicalToDeviceUnits(MonitorMinWidth);
+        int cap = s.Width - s.SplitterWidth - s.Panel2MinSize;   // the most the SplitContainer itself allows
+        int want = Math.Max(s.SplitterDistance, min);
+        if (roomy >= min) want = Math.Min(want, roomy);
+        want = Math.Min(want, cap);
+        if (want < s.Panel1MinSize || want == s.SplitterDistance) return;
+        try { s.SplitterDistance = want; } catch (ArgumentException) { }   // a window too small for both: left as it is
+    }
+
+    /// <summary>0.1.3: a window opens no bigger than the working area of its screen, centred on it.</summary>
+    public static void FitToScreen(Form f)
+    {
+        var wa = Screen.FromControl(f).WorkingArea;
+        if (f.Width <= wa.Width && f.Height <= wa.Height) return;
+        f.Size = new Size(Math.Min(f.Width, wa.Width), Math.Min(f.Height, wa.Height));
+        f.Location = new Point(wa.Left + (wa.Width - f.Width) / 2, wa.Top + (wa.Height - f.Height) / 2);
     }
 
     private Control BuildFfbPage()
@@ -197,6 +279,7 @@ public sealed class MainForm : Form
 
         // Force feedback: master, output, layers.
         var ffb = new GroupBox { Text = "Force feedback", Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        FfbGroup = ffb;
         var grid = NewGrid(withBar: true);
         _ffbStatus = new Label { AutoSize = true, Margin = new Padding(3, 4, 3, 6) };
         grid.Controls.Add(_ffbStatus, 0, grid.RowCount);
@@ -253,9 +336,12 @@ public sealed class MainForm : Form
         root.Controls.Add(ffb, 0, 0);
 
         // Tabs: effect shape, behaviour, steering & pedals.
-        var tabs = new TabControl { Dock = DockStyle.Fill };
+        var tabs = _underTabs = new TabControl { Dock = DockStyle.Fill };
         tabs.TabPages.Add(BuildShapeTab());
         tabs.TabPages.Add(BuildSteeringTab());
+        // 0.1.3: the page's height follows the open tab and the panel's width (FitFfbPage)
+        tabs.SelectedIndexChanged += (_, _) => FitFfbPage();
+        ffb.SizeChanged += (_, _) => FitFfbPage();
         root.Controls.Add(tabs, 0, 1);
         return root;
     }
@@ -299,7 +385,7 @@ public sealed class MainForm : Form
 
     private TabPage BuildSteeringTab()
     {
-        var page = new TabPage("Steering & pedals") { Padding = new Padding(6) };
+        var page = new TabPage("Steering & pedals") { Padding = new Padding(6), AutoScroll = true };   // 0.1.3: as the shape tab
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));

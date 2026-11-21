@@ -7,7 +7,7 @@ CCappsDevelopment (MIT), which did this for MOZA bases through MOZA's SDK. This 
 through DirectInput instead, so it works with any wheelbase that Windows sees as a force-feedback game controller. The
 force model, the virtual pad and the recorded laps are the bridge's work.
 
-> **0.1.2 is a preview. It has not driven a real wheel yet.** It is tested offline: 54 tests, four recorded laps.
+> **0.1.3 is a preview. It has not driven a real wheel yet.** It is tested offline: 58 tests, four recorded laps.
 > On a first run, set a low Master strength, keep your hands clear of the wheel for the motor test, and keep the
 > **KILL FFB** button within reach.
 
@@ -80,14 +80,19 @@ Settings, profiles and recordings are kept in `%APPDATA%\vn-motion-dashboard\gam
 
 ## Build and test
 
-You need the .NET 10 SDK (10.0.302 built the 0.1.2 release).
+You need the .NET 10 SDK (10.0.404 built the 0.1.3 release).
 
 ```
-dotnet run -c Release --project tests              the offline suite: "54 passed, 0 failed"
+dotnet run -c Release --project tests              the offline suite: "58 passed, 0 failed"
 dotnet publish src/GameLinkWheel.csproj -c Release -r win-x64 --self-contained true -o out
 ```
 
 The suite needs no wheel, game, ViGEmBus or dashboard. It replays the four laps in `tests/recordings`.
+
+Its four `windows:` tests build every window, setup page and tab off screen at your screen's scaling, and fail on text
+that is cut off or squeezed, controls on top of each other, a sideways scroll or a window that did not scale up. They take
+the focus for a moment. `GLW_TEST_DPI=96` lays them out as on a 100 % screen; `GLW_RENDER_DIR=<folder>` saves a picture of
+each screen there.
 
 The release exe is meant to be rebuilt byte for byte from this source with the same SDK:
 

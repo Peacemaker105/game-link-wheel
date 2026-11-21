@@ -82,6 +82,10 @@ public sealed class SteeringCurve : Control
         Font = new Font("Segoe UI", 8f);
     }
 
+    /// <summary>0.1.3: a plot has no size of its own. It asks only for its minimum, so the table row it sits in is sized by the
+    /// settings beside it, and it fills that row.</summary>
+    public override Size GetPreferredSize(Size proposedSize) => MinimumSize;
+
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
@@ -122,18 +126,32 @@ public static class Prompt
 {
     public static string? Show(IWin32Window owner, string title, string label, string initial = "")
     {
-        using var f = new Form
+        using var f = Build(title, label, initial, out var box);
+        return f.ShowDialog(owner) == DialogResult.OK ? box.Text.Trim() : null;
+    }
+
+    /// <summary>The prompt's window as Show shows it (0.1.3: the window tests build it off screen).</summary>
+    public static Form Build(string title, string label, string initial, out TextBox box)
+    {
+        var f = new Form
         {
             Text = title, FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent,
-            MinimizeBox = false, MaximizeBox = false, ClientSize = new Size(360, 110), AutoScaleMode = AutoScaleMode.Dpi,
+            MinimizeBox = false, MaximizeBox = false,
         };
+        // 0.1.3: scaled with the screen, as the main window (see there): sizes written for 96 dpi, scaled at ResumeLayout
+        f.SuspendLayout();
+        f.AutoScaleDimensions = new SizeF(96F, 96F);
+        f.AutoScaleMode = AutoScaleMode.Dpi;
+        f.ClientSize = new Size(360, 110);
         var lbl = new Label { Text = label, Left = 12, Top = 12, Width = 336 };
-        var box = new TextBox { Text = initial, Left = 12, Top = 36, Width = 336 };
+        box = new TextBox { Text = initial, Left = 12, Top = 36, Width = 336 };
         var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Left = 192, Top = 72, Width = 75 };
         var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Left = 273, Top = 72, Width = 75 };
         f.Controls.AddRange([lbl, box, ok, cancel]);
         f.AcceptButton = ok;
         f.CancelButton = cancel;
-        return f.ShowDialog(owner) == DialogResult.OK ? box.Text.Trim() : null;
+        f.ResumeLayout(false);
+        f.PerformLayout();
+        return f;
     }
 }

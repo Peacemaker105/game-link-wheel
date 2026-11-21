@@ -61,19 +61,26 @@ public sealed class SetupWizard : Form
         _host = host;
         _changed = changed;
         _say = say;
-        Text = "Game Link Wheel setup";
+        // 0.1.3: scaled with the screen, as the main window (see there): sizes written for 96 dpi, the layout suspended to the end
+        SuspendLayout();
+        AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
+        Text = "Game Link Wheel setup";
         Font = new Font("Segoe UI", 9.75f);
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = MinimizeBox = false;
+        // 0.1.3 (Chris, 2026-11-18: "the wheel calibration window at startup needs to be wider/larger to not have to side
+        // scroll and fit the whole page"): larger, and it can be resized; it opens no bigger than the screen
+        FormBorderStyle = FormBorderStyle.Sizable;
+        MaximizeBox = true;
+        MinimizeBox = false;
         StartPosition = FormStartPosition.CenterParent;
-        ClientSize = new Size(760, 640);
+        ClientSize = new Size(960, 700);
+        MinimumSize = new Size(640, 480);
 
         _title = new Label { AutoSize = true, Font = new Font("Segoe UI", 13f, FontStyle.Bold), Margin = new Padding(3, 3, 3, 10) };
-        _body = new Label { AutoSize = true, MaximumSize = new Size(720, 0), Margin = new Padding(3, 3, 3, 12) };
+        _body = new Label { AutoSize = true, MaximumSize = new Size(880, 0), Margin = new Padding(3, 3, 3, 12) };
         _action = new Button { AutoSize = true, Height = 34, Font = new Font(Font, FontStyle.Bold), Margin = new Padding(3, 3, 3, 8) };
-        _result = new Label { AutoSize = true, MaximumSize = new Size(720, 0), ForeColor = Color.SeaGreen, Font = new Font(Font, FontStyle.Bold) };
-        _live = new Label { AutoSize = true, MaximumSize = new Size(720, 0), Font = new Font("Consolas", 9.5f), ForeColor = SystemColors.GrayText, Margin = new Padding(3, 12, 3, 3) };
+        _result = new Label { AutoSize = true, MaximumSize = new Size(880, 0), ForeColor = Color.SeaGreen, Font = new Font(Font, FontStyle.Bold) };
+        _live = new Label { AutoSize = true, MaximumSize = new Size(880, 0), Font = new Font("Consolas", 9.5f), ForeColor = SystemColors.GrayText, Margin = new Padding(3, 12, 3, 3) };
 
         _wheelGrid = new TableLayoutPanel { AutoSize = true, ColumnCount = 3, Margin = new Padding(3, 0, 3, 10) };
         _base = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 380 };
@@ -93,11 +100,26 @@ public sealed class SetupWizard : Form
             if (b is not null) _wheelGrid.Controls.Add(b, 2, r);
         }
         Row("Force feedback wheelbase", _base, refresh);
-        Row("Rated torque (Nm)", _rated, _ratedNote);
-        Row("Rotation, lock to lock (°)", _travel, new Label { Text = "as set in your wheelbase's own software", AutoSize = true, Anchor = AnchorStyles.Left });
+        // 0.1.3: each box's note in a row of its own, under the box. Beside it, the torque note set the third column's width for
+        // every row (the page needed a sideways scroll), and the rotation's sat past the base picker's width, far from its box
+        void Note(Label note)
+        {
+            int r = _wheelGrid.RowCount++;
+            _wheelGrid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            _wheelGrid.Controls.Add(note, 1, r);
+            _wheelGrid.SetColumnSpan(note, 2);
+        }
+        Row("Rated torque (Nm)", _rated, null);
+        Note(_ratedNote);
+        Row("Rotation, lock to lock (°)", _travel, null);
+        Note(new Label { Text = "as set in your wheelbase's own software", AutoSize = true, Anchor = AnchorStyles.Left });
 
         var content = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(16), AutoScroll = true };
         content.Controls.AddRange([_title, _body, _wheelGrid, _action, _result, _live]);
+        Content = content;
+        // 0.1.3: the text wraps at the window's width, whatever it is resized to
+        content.Resize += (_, _) => FitText();
+        Load += (_, _) => { MainForm.FitToScreen(this); FitText(); };
 
         _next = new Button { AutoSize = true, Height = 32, MinimumSize = new Size(100, 0) };
         _skip = new Button { AutoSize = true, Height = 32, MinimumSize = new Size(100, 0) };
@@ -128,12 +150,26 @@ public sealed class SetupWizard : Form
         FillBases();
         GoTo(Step.Wheel);
         _timer.Start();
+        ResumeLayout(false);   // 0.1.3: the scaling to this screen's dpi happens here
+        PerformLayout();
     }
 
     protected override void Dispose(bool disposing)
     {
         if (disposing) _timer.Dispose();
         base.Dispose(disposing);
+    }
+
+    /// <summary>0.1.3: the page's own panel, for the layout test.</summary>
+    public FlowLayoutPanel Content { get; }
+
+    /// <summary>0.1.3: every block of text wraps at the page's width, so the page never needs a sideways scroll for it.</summary>
+    private void FitText()
+    {
+        int w = Content.ClientSize.Width - Content.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - LogicalToDeviceUnits(12);
+        if (w < LogicalToDeviceUnits(200)) return;
+        foreach (var l in new[] { _body, _result, _live }) l.MaximumSize = new Size(w, 0);
+        _ratedNote.MaximumSize = new Size(Math.Max(LogicalToDeviceUnits(160), w - LogicalToDeviceUnits(220)), 0);
     }
 
     // ───────────────────────────── the wheel ─────────────────────────────
