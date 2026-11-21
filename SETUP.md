@@ -33,6 +33,10 @@ Galactic Racer needs its own build of UE4SS:
 [UE4SS Galactic Racer Edition](https://www.nexusmods.com/starwarsgalacticracer/mods/2) on Nexus Mods. It is the UE4SS
 loader plus this game's signature and settings files.
 
+> **Not the stock UE4SS.** The plain UE4SS from GitHub (such as `UE4SS_v4.0.0.zip`) can't find this game's engine: its
+> `UE4SS.log` fills with "Failed to find GUObjectArray" and ends with **Fatal Error: PS scan timed out**, and no mod
+> loads. Only the Galactic Racer Edition carries the game's own signatures (its `UE4SS_Signatures` folder).
+
 1. **Close the game.**
 2. **Download the zip.** Open the UE4SS Galactic Racer Edition page, log in, open **Files** and download its file.
 3. **Find the game's `Win64` folder**, the one with `SWGR-Win64-Shipping.exe` in it. In Steam, right-click the game,
@@ -71,8 +75,8 @@ line `VNMGalacticRacer : 1` to `ue4ss\Mods\mods.txt`.
 2. **Start the game** and race, single-player.
 
 Motion eases in when you take control of a vehicle. It eases out in menus, pause, cinematics, on foot, after the finish,
-and while the vehicle is upside down or nose straight up or down. The **Game Link UDP port** in the panel is 4126:
-change it only if another program holds that port.
+from a crash to its respawn, and while the vehicle is upside down or nose straight up or down. The **Game Link UDP port**
+in the panel is 4126: change it only if another program holds that port.
 
 ## Part 4: Install ViGEmBus and Game Link Wheel
 
@@ -124,8 +128,9 @@ motion.
    dashboard checks Game Link Wheel's copy and starts it.
 3. **Start the game** and race.
 
-The right profile loads by itself for each vehicle class. The force mutes in menus, pause and after the finish. On foot,
-the wheel's pad is held still, so walk with the keyboard.
+The right profile loads by itself for each vehicle class. The force mutes in menus, pause and after the finish. In
+those menus the steering and pedals send nothing, so they can't scroll the menus; select with the wheel's buttons. On
+foot, the wheel's pad is held still, so walk with the keyboard.
 
 **What stops the force:**
 
@@ -145,6 +150,7 @@ saved; profiles never turn it back on.
 | What you see | What to do |
 | --- | --- |
 | The game hangs as it starts | Let your user write to the `ue4ss` folder (Part 1). |
+| `UE4SS.log` ends with "Fatal Error: PS scan timed out" | That's a stock UE4SS. Close the game, delete `dwmapi.dll` and the `ue4ss` folder, extract the Galactic Racer Edition instead, then press **Install** in the dashboard again. |
 | The Install box says the game was not found | **Locate the game…** and choose its `Griffin\Binaries\Win64` folder. |
 | The Install box shows **Get UE4SS for Galactic Racer** | UE4SS isn't in: finish Part 1, then **Check again**. |
 | No `[VNMGalacticRacer] loaded` in `UE4SS.log` | Check `dwmapi.dll` sits beside `SWGR-Win64-Shipping.exe` and `ue4ss\Mods\mods.txt` has `VNMGalacticRacer : 1`. After a game update, update UE4SS too. |

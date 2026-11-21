@@ -75,6 +75,12 @@ public sealed class BridgeConfig
     /// <summary>Hold the virtual pad neutral while Shade is on foot in the hub, so another controller/keyboard drives.</summary>
     public bool PausePadOnFoot { get; set; } = true;
 
+    /// <summary>
+    /// Hold the steering and pedals neutral while the game isn't letting you drive (menus, pause, results), so a wheel
+    /// a little off center or a resting pedal can't take over the menus. Buttons still reach the game (changes/0360).
+    /// </summary>
+    public bool HoldAxesInMenus { get; set; } = true;
+
     /// <summary>The first-run setup (motor test, pedal calibration, controls) was finished or skipped in the GUI.</summary>
     public bool SetupDone { get; set; }
 

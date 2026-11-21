@@ -48,6 +48,9 @@ var tests = new List<(string Name, Action Body)>
     ("bindings: capture, bind / replace / clear", InputTests.Capture),
     ("bindings: buttons, pedal buttons, paddle triggers, no pedals", InputTests.Bindings),
     ("bindings: descriptions and duplicate detection", InputTests.BindingText),
+    ("menus: wheel and pedals held, buttons and paddles still go through", InputTests.MenuMapping),
+    ("menus: driving is a vehicle from the grid on, not finished; menus, pause and results are not", InputTests.MenuDriving),
+    ("menus: held after 0.25 s of not driving, never on foot, stale or switched off", InputTests.MenuTiming),
     ("devices: steering from any axis, right is +, the rotation sets the degrees", DeviceTests.Steering),
     ("devices: an unplugged wheel gives no state, unplugged pedals read released", DeviceTests.Unplugged),
     ("devices: a replugged controller or base is found by name, never one of two", DeviceTests.Replugged),
@@ -732,6 +735,77 @@ static class InputTests
         var raw = new BridgeConfig { TriggerButtons = null! };
         raw.Sanitize();
         Check.True(raw.TriggerButtons["RT"] is not null && raw.TriggerButtons["LT"] is not null, "TriggerButtons not repaired");
+    }
+
+    // changes/0360: in a menu the wheel and pedals send nothing, so they can't take the menus over; buttons still select.
+    public static void MenuMapping()
+    {
+        var c = Pedalled();
+        c.SteeringLockDegrees = 180;
+        c.Buttons = new() { ["A"] = [14], ["Down"] = [30] };
+        c.PedalButtons = [new PedalButton { Button = "X", Pedal = "Clutch", Threshold = 0.5f }];
+        c.TriggerButtons = new() { ["RT"] = [], ["LT"] = [41] };
+        var down = new bool[PadMapping.Buttons.Length];
+        int Ix(string b) => Array.IndexOf(PadMapping.Buttons, b);
+        // Wheel 60° right, throttle and brake half down, clutch fully down, A and Down pressed.
+        var s = new WheelState(60, 0, 0, 0, 32767, new HashSet<int> { 14, 30 }, DateTime.UtcNow);
+
+        var (stick, rt, lt) = PadMapping.Map(s, c, down);
+        Check.True(stick > 0.5f && rt > 0.4f && lt > 0.4f && down[Ix("X")], $"driving: stick {stick} rt {rt} lt {lt} X {down[Ix("X")]}");
+
+        (stick, rt, lt) = PadMapping.Map(s, c, down, axesHeld: true);
+        Check.True(stick == 0 && rt == 0 && lt == 0, $"menu: stick {stick} rt {rt} lt {lt}");
+        Check.True(down[Ix("A")] && down[Ix("Down")], "menu: a button didn't go through");
+        Check.True(!down[Ix("X")], "menu: the clutch still pressed X");
+
+        // A paddle on a trigger is a button: it still goes through.
+        (_, _, lt) = PadMapping.Map(s with { Pressed = new HashSet<int> { 41 } }, c, down, axesHeld: true);
+        Check.True(lt == 1, $"menu: paddle LT {lt}");
+    }
+
+    public static void MenuDriving()
+    {
+        TelemetryFrame F(FrameFlags flags, byte inputMode)
+        {
+            var bytes = new byte[TelemetryFrame.ByteCount];
+            bytes[(int)B.InputMode] = inputMode;
+            return Frames.Parse(Frames.Build(bytes: bytes, flags: flags));
+        }
+        Check.True(!VirtualPad.IsDriving(F(FrameFlags.None, 0)), "no vehicle (main menu) counted as driving");
+        Check.True(!VirtualPad.IsDriving(F(FrameFlags.OnFoot, 0)), "on foot counted as driving");
+        Check.True(!VirtualPad.IsDriving(F(FrameFlags.HasVehicle, 0)), "InputMode Idle (pause, menus) counted as driving");
+        Check.True(VirtualPad.IsDriving(F(FrameFlags.HasVehicle, 1)), "the starting grid isn't driving: no throttle for the start");
+        Check.True(VirtualPad.IsDriving(F(FrameFlags.HasVehicle, 2)), "the perfect start isn't driving");
+        Check.True(VirtualPad.IsDriving(F(FrameFlags.HasVehicle, 3)), "racing isn't driving");
+        Check.True(!VirtualPad.IsDriving(F(FrameFlags.HasVehicle | FrameFlags.RaceDone, 3)), "a finished race (results) counted as driving");
+
+        // Through Game Link's frame: paused, a cinematic or not under control reads as Idle, so not driving.
+        var mode = new Dictionary<string, byte> { ["InputMode"] = 3 };
+        var quat = new Dictionary<string, float> { ["QuatW"] = 1 };
+        TelemetryFrame Link(params string[] flags) => Vnsg.ToBridgeFrame(VnsgTests.Build(flags: flags, f: quat, b: mode), new Vnsg.YawRate());
+        Check.True(VirtualPad.IsDriving(Link("HasVehicle", "Valid", "Controlled")), "a racing Game Link frame isn't driving");
+        foreach (var why in new[] { "Paused", "Cinematic" })
+            Check.True(!VirtualPad.IsDriving(Link("HasVehicle", "Valid", "Controlled", why)), $"{why} (a menu) counted as driving");
+        Check.True(!VirtualPad.IsDriving(Link("HasVehicle", "Valid", "Controlled", "RaceDone")), "results counted as driving");
+    }
+
+    public static void MenuTiming()
+    {
+        var t0 = new DateTime(2026, 11, 21, 12, 0, 0, DateTimeKind.Utc);
+        long since = VirtualPad.MenuSince(driving: false, 0, t0);
+        Check.True(since == t0.Ticks, "the menu's start not taken");
+        Check.True(VirtualPad.MenuSince(false, since, t0.AddSeconds(5)) == since, "a later menu frame moved the start");
+        Check.True(VirtualPad.MenuSince(true, since, t0.AddSeconds(5)) == 0, "driving didn't clear it");
+
+        bool Hold(double at, bool enabled = true, bool onFoot = false, double frameAge = 0.05, long? s = null) =>
+            VirtualPad.MenuHold(enabled, onFoot, t0.AddSeconds(at - frameAge), s ?? since, t0.AddSeconds(at));
+        Check.True(!Hold(0.1), "held before 0.25 s (a respawn's moment would drop the steering)");
+        Check.True(Hold(0.3), "not held in a menu after 0.3 s");
+        Check.True(!Hold(5, s: 0), "held while driving");
+        Check.True(!Hold(5, onFoot: true), "held on foot (that has its own setting)");
+        Check.True(!Hold(5, enabled: false), "held with the setting off");
+        Check.True(!Hold(5, frameAge: 1.5), "held on stale telemetry: a closed game or no mod must leave the wheel driving");
+        Check.True(new BridgeConfig().HoldAxesInMenus, "not on by default");
     }
 
     public static void BindingText()

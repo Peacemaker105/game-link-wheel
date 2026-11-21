@@ -46,6 +46,39 @@ public sealed class VirtualPad : IDisposable
     /// <summary>The pad is held neutral because Shade is on foot.</summary>
     public bool OnFootPaused => _cfg.PausePadOnFoot && Telemetry.OnFoot && (DateTime.UtcNow - Telemetry.Time).TotalSeconds < 1;
 
+    /// <summary>A menu must last this long before the wheel and pedals are held, so a moment's flag (a respawn) never drops the steering.</summary>
+    public const double MenuHoldDelaySeconds = 0.25;
+    private long _menuSinceTicks;   // UTC ticks since the frames stopped saying "driving"; 0 while driving
+
+    /// <summary>From each telemetry frame (the receiver's thread): whether Shade is on foot, and whether the player is driving.</summary>
+    public void OnFrame(TelemetryFrame frame, DateTime now)
+    {
+        Interlocked.Exchange(ref _menuSinceTicks, MenuSince(IsDriving(frame), Interlocked.Read(ref _menuSinceTicks), now));
+        Telemetry = (frame.Has(FrameFlags.OnFoot), now);
+    }
+
+    /// <summary>When the current menu began (UTC ticks): 0 while driving, kept from the first not-driving frame on.</summary>
+    public static long MenuSince(bool driving, long sinceTicks, DateTime now) => driving ? 0 : sinceTicks != 0 ? sinceTicks : now.Ticks;
+
+    /// <summary>
+    /// The game is letting the player drive: a vehicle whose InputMode is past Idle (the grid, the start, racing) and a
+    /// race not yet finished. Game Link reads InputMode as Idle while paused, in a cinematic or not under the player's
+    /// control, so the main menu, the pause menu and the results all read as not driving (changes/0360).
+    /// </summary>
+    public static bool IsDriving(TelemetryFrame f) =>
+        f.Has(FrameFlags.HasVehicle) && f[B.InputMode] != 0 && !f.Has(FrameFlags.RaceDone);
+
+    /// <summary>The wheel and pedals are held because the game is in a menu (buttons still go through).</summary>
+    public bool MenuHeld => MenuHold(_cfg.HoldAxesInMenus, Telemetry.OnFoot, Telemetry.Time, Interlocked.Read(ref _menuSinceTicks), DateTime.UtcNow);
+
+    /// <summary>
+    /// The rule behind <see cref="MenuHeld"/>. Never while on foot (its own setting decides), and never without fresh
+    /// telemetry: with the mod missing or the game closed the wheel drives the pad as it always did.
+    /// </summary>
+    public static bool MenuHold(bool enabled, bool onFoot, DateTime lastFrame, long menuSinceTicks, DateTime now) =>
+        enabled && !onFoot && menuSinceTicks != 0 && (now - lastFrame).TotalSeconds < 1
+        && now.Ticks - menuSinceTicks >= TimeSpan.FromSeconds(MenuHoldDelaySeconds).Ticks;
+
     public VirtualPad(WheelInput wheel, BridgeConfig cfg)
     {
         _wheel = wheel;
@@ -101,7 +134,7 @@ public sealed class VirtualPad : IDisposable
                 bool live = s is not null && _cfg.PadOutputEnabled && !OnFootPaused && (DateTime.UtcNow - s.Time).TotalMilliseconds < 200;
                 float stick = 0, rt = 0, lt = 0;
                 Array.Clear(down);
-                if (live) (stick, rt, lt) = PadMapping.Map(s!, _cfg, down);
+                if (live) (stick, rt, lt) = PadMapping.Map(s!, _cfg, down, axesHeld: MenuHeld);
                 if (HoldStickCentered?.Invoke() == true) stick = 0;
 
                 _pad.SetAxisValue(Xbox360Axis.LeftThumbX, (short)Math.Round(stick * 32767));

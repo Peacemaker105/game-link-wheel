@@ -167,8 +167,13 @@ public static class Tips
         """;
 
     public const string PausePadOnFoot = """
-        Pause wheel on foot: while Shade is walking the hub (talking to characters, shops), the wheel sends nothing to the game, so your controller or keyboard drives her. The wheel takes over again as soon as you are back in a vehicle or a menu.
+        Pause wheel on foot: while Shade is walking the hub (talking to characters, shops), the wheel sends nothing to the game, so your controller or keyboard drives her. The wheel takes over again as soon as you are back in a vehicle or a menu (in menus only its buttons, while "Hold wheel and pedals in menus" is on).
         Turn off if you want to walk Shade around with the wheel.
+        """;
+
+    public const string HoldAxesInMenus = """
+        Hold wheel and pedals in menus: while the game isn't letting you drive (main menu, pause menu, results), the steering and pedals send nothing, so a wheel resting a little off center or a foot on a pedal can't scroll the menus away from you. Your wheel's buttons still go to the game, so you can select with them.
+        Steering and pedals come back the moment a race lets you drive (the starting grid onward). Needs the telemetry mod: without it the wheel always drives.
         """;
 
     public const string MuteNotRacing = """

@@ -22,7 +22,7 @@
     <NoWarn>$(NoWarn);WFO1000</NoWarn>
     <AssemblyName>GameLinkWheel</AssemblyName>
     <RootNamespace>WheelBridge</RootNamespace>
-    <Version>0.1.1</Version>
+    <Version>0.1.2</Version>
     <Product>VN Motion Game Link Wheel</Product>
     <Description>Force feedback and controls for STAR WARS: Galactic Racer on any DirectInput wheel</Description>
     <Copyright>Game Link Wheel: VN Motion. SWGR Wheel Bridge: MIT, the SWGR Wheel Bridge contributors</Copyright>

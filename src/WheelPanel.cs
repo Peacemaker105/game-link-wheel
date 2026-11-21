@@ -21,7 +21,7 @@ public static class WheelPanel
             sb.AppendLine($"Buttons {(s.Pressed.Count == 0 ? "-" : string.Join(' ', s.Pressed.Order()))}   → pad {(pad.Sent.Buttons.Length == 0 ? "-" : pad.Sent.Buttons)}");
         }
         if (cal.Active) sb.AppendLine($"CALIBRATING: press each pedal fully once… {cal.SecondsLeft:F0}s");
-        sb.AppendLine($"Pad     {pad.Status}{(!cfg.PadOutputEnabled ? "  (output disabled in config)" : pad.OnFootPaused ? "  (paused: on foot in the hub)" : "")}");
+        sb.AppendLine($"Pad     {pad.Status}{(!cfg.PadOutputEnabled ? "  (output disabled in config)" : pad.OnFootPaused ? "  (paused: on foot in the hub)" : pad.MenuHeld ? "  (menu: wheel and pedals held, buttons live)" : "")}");
         var r = pad.Rumble;
         bool recent = (DateTime.UtcNow - r.Time).TotalSeconds < 1;
         sb.AppendLine($"Rumble  large {Dashboard.Meter(recent ? r.Large : 0)}  small {Dashboard.Meter(recent ? r.Small : 0)}");

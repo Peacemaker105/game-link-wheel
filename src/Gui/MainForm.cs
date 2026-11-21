@@ -317,6 +317,8 @@ public sealed class MainForm : Form
             () => Cfg.PadOutputEnabled, v => Cfg.PadOutputEnabled = v);
         AddCheckRow(grid, "Pause wheel while Shade is on foot (hub)", Tips.PausePadOnFoot,
             () => Cfg.PausePadOnFoot, v => Cfg.PausePadOnFoot = v);
+        AddCheckRow(grid, "Hold wheel and pedals in menus", Tips.HoldAxesInMenus,
+            () => Cfg.HoldAxesInMenus, v => Cfg.HoldAxesInMenus = v);
         _curve = new SteeringCurve(Cfg, () => _host.Wheel.State?.AngleDegrees) { Dock = DockStyle.Fill, MinimumSize = new Size(200, 160) };
         layout.Controls.Add(grid, 0, 0);
         layout.Controls.Add(_curve, 1, 0);

@@ -40,21 +40,23 @@ public static class PadMapping
     /// Fills <paramref name="down"/> (indexed like <see cref="Buttons"/>) and returns stick X (-1..1) and the triggers (0..1).
     /// A trigger takes the larger of its pedal and its buttons (a held button = fully pressed), so a wheel without
     /// pedals can accelerate and brake on paddles.
+    /// With <paramref name="axesHeld"/> (a menu, changes/0360) the wheel and pedals count as centered and released,
+    /// pedal buttons included; buttons, hats and paddle triggers still go through.
     /// </summary>
-    public static (float Stick, float Rt, float Lt) Map(WheelState s, BridgeConfig cfg, bool[] down)
+    public static (float Stick, float Rt, float Lt) Map(WheelState s, BridgeConfig cfg, bool[] down, bool axesHeld = false)
     {
         // Read each collection once: the GUI replaces them (never edits them in place) while this runs on the pad thread.
         var buttons = cfg.Buttons;
         var triggers = cfg.TriggerButtons;
         var pedalButtons = cfg.PedalButtons;
 
-        float stick = VirtualPad.SteeringToStick(s.AngleDegrees, cfg);
-        float rt = Math.Max(PedalValue(cfg.RightTriggerPedal, s, cfg), AnyPressed(triggers, "RT", s) ? 1 : 0);
-        float lt = Math.Max(PedalValue(cfg.LeftTriggerPedal, s, cfg), AnyPressed(triggers, "LT", s) ? 1 : 0);
+        float stick = axesHeld ? 0 : VirtualPad.SteeringToStick(s.AngleDegrees, cfg);
+        float rt = Math.Max(axesHeld ? 0 : PedalValue(cfg.RightTriggerPedal, s, cfg), AnyPressed(triggers, "RT", s) ? 1 : 0);
+        float lt = Math.Max(axesHeld ? 0 : PedalValue(cfg.LeftTriggerPedal, s, cfg), AnyPressed(triggers, "LT", s) ? 1 : 0);
         for (int b = 0; b < Buttons.Length; b++)
         {
             bool d = AnyPressed(buttons, Buttons[b], s);
-            if (!d)
+            if (!d && !axesHeld)
                 foreach (var pb in pedalButtons)
                     if (string.Equals(pb.Button, Buttons[b], StringComparison.OrdinalIgnoreCase) && PedalValue(pb.Pedal, s, cfg) >= pb.Threshold) { d = true; break; }
             down[b] = d;

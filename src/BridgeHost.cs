@@ -64,7 +64,7 @@ public sealed class BridgeHost : IDisposable
         {
             Dashboard.OnFrame(frame);
             Ffb.OnFrame(frame);
-            Pad.Telemetry = (frame.Has(FrameFlags.OnFoot), DateTime.UtcNow);
+            Pad.OnFrame(frame, DateTime.UtcNow);
             lock (_recLock)
             {
                 try { _recorder?.Write(frame); }
